@@ -5,10 +5,16 @@ Cubie A7Z running Debian 11 bullseye aarch64. Like the [raspberry
 guide](./Raspberry.md) it is inspired by [this excelent
 resource](https://tttapa.github.io/Pages/Raspberry-Pi).
 
-## Setup the Radxa Zero 3W:
+## Setup the Radxa Cubie A7Z
 
 - Download the [OS image](https://github.com/radxa-build/radxa-cubie-a7z/releases/latest).
-- Burn image to microsd with something like [balena etcher](https://etcher.balena.io/).
+- Burn image to microsd with something like [balena etcher](https://etcher.balena.io/) or with `dd`:
+
+  ```bash
+  xz -d radxa-cubie-a7z_bullseye_kde_t7.output_512.img.xz
+  sudo dd if=radxa-cubie-a7z_bullseye_kde_t7.output_512.img of=/dev/microsd/dir/like/sda bs=4M status=progress conv=fsync
+  ```
+
 - Configure ssh and wifi: [edit before.txt and config.txt](https://docs.radxa.com/en/template/sbc/radxa-os/headless)
 - Scan local network for radxa (radxa can be slow, use timeout): `sudo nmap -p 22 -Pn --host-timeout 1s 192.168.0.0/24`
 - Connect with ssh to the found IP, default user and password is `radxa`.
@@ -75,7 +81,7 @@ tar -cJvf bullseye-arm64-sysroot.tar.xz "$SYSROOT"
 
 ### Option A: Use Ubuntu's cross-compilers
 
-- TODO: Still not tested, but it doesnt work for [Raspberry.md](./Raspberry.md) nor for [RadxaZero.md](./RadxaZero.md).
+- TODO: Still not tested, but it doesnt work for [Raspberry.md](./Raspberry.md) nor for [RadxaZero.md](./RadxaZero.md) nor for [RadxaCubie.md](./RadxaCubie.md).
 
 ### Option B (recommended): Use tttapa cross toolchain
 
@@ -112,14 +118,14 @@ sudo apt install -f ./basalt-monado-radxa-bullseye-aarch64.deb
 basalt_vio --help
 wget https://huggingface.co/datasets/collabora/monado-slam-datasets/resolve/main/M_monado_datasets/MO_odyssey_plus/MOO_others/MOO11_short_3_backandforth.zip
 unzip MOO11_short_3_backandforth.zip
-cp /usr/local/share/basalt/msdmo_config.json config.json
+cp /usr/share/basalt/msdmo_config.json config.json
 # It is recommended to reduce noisy features to diminish processing times
 sed -i -e 's/\("config.optical_flow_detection_grid_size": \)[0-9]\+/\160/' config.json
 sed -i -e 's/\("config.optical_flow_detection_min_threshold": \)[0-9]\+/\120/' config.json
 # Run 3 times command to warm up the system
-time basalt_vio --show-gui 0 --dataset-path MOO11_short_3_backandforth --config-path config.json --cam-calib /usr/local/share/basalt/msdmo_calib.json
-time basalt_vio --show-gui 0 --dataset-path MOO11_short_3_backandforth --config-path config.json --cam-calib /usr/local/share/basalt/msdmo_calib.json
-time basalt_vio --show-gui 0 --dataset-path MOO11_short_3_backandforth --config-path config.json --cam-calib /usr/local/share/basalt/msdmo_calib.json
+time basalt_vio --show-gui 1 --dataset-path MOO11_short_3_backandforth --config-path config.json --cam-calib /usr/share/basalt/msdmo_calib.json
+time basalt_vio --show-gui 0 --dataset-path MOO11_short_3_backandforth --config-path config.json --cam-calib /usr/share/basalt/msdmo_calib.json
+time basalt_vio --show-gui 0 --dataset-path MOO11_short_3_backandforth --config-path config.json --cam-calib /usr/share/basalt/msdmo_calib.json
 ```
 
 ## Debug

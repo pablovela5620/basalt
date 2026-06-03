@@ -8,7 +8,13 @@ resource](https://tttapa.github.io/Pages/Raspberry-Pi).
 ## Setup the Radxa Zero 3W:
 
 - Download the [OS image](https://github.com/radxa-build/radxa-zero3/releases/latest).
-- Burn image to microsd with something like [balena etcher](https://etcher.balena.io/).
+- Burn image to microsd with something like [balena etcher](https://etcher.balena.io/) or with `dd`:
+
+  ```bash
+  xz -d radxa-zero3_bookworm_kde_b1.output_512.img.xz
+  sudo dd if=radxa-zero3_bookworm_kde_b1.output_512.img of=/dev/microsd/dir/like/sda bs=4M status=progress conv=fsync
+  ```
+
 - Configure ssh and wifi: [edit before.txt and config.txt](https://docs.radxa.com/en/template/sbc/radxa-os/headless)
 - Scan local network for radxa (radxa can be slow, use timeout): `sudo nmap -p 22 -Pn --host-timeout 1s 192.168.0.0/24`
 - Connect with ssh to the found IP, default user and password is `radxa`.
