@@ -128,6 +128,7 @@ class PatchOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
         auto pim = processImu(img->t_ns);
         pim.predictState(*latest_state, constants::g, *predicted_state);
       }
+      img->addTime("frontend_preintegration_computed");
 
       processFrame(img->t_ns, img);
     }
@@ -198,11 +199,15 @@ class PatchOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
           pyramid->at(i).setFromImage(*new_img_vec->img_data[i].img, config.optical_flow_levels);
         }
       });
+      new_img_vec->addTime("frontend_pyramid_created");
+      new_img_vec->addTime("frontend_tracking_ended");
 
       transforms->input_images = new_img_vec;
+      transforms->input_images->addTime("frontend_recall_ended");
 
       addPoints();
       filterPoints();
+      transforms->input_images->addTime("frontend_filter_ended");
     } else {
       t_ns = curr_t_ns;
 
@@ -215,6 +220,7 @@ class PatchOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
           pyramid->at(i).setFromImage(*new_img_vec->img_data[i].img, config.optical_flow_levels);
         }
       });
+      new_img_vec->addTime("frontend_pyramid_created");
 
       OpticalFlowResult::Ptr new_transforms;
       new_transforms.reset(new OpticalFlowResult);
@@ -234,12 +240,15 @@ class PatchOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
                     new_transforms->tracking_guesses[i],  //
                     new_img_vec->masks.at(i), new_img_vec->masks.at(i), T_c1_c2, i, i);
       }
+      new_img_vec->addTime("frontend_tracking_ended");
 
       transforms = new_transforms;
       transforms->input_images = new_img_vec;
+      transforms->input_images->addTime("frontend_recall_ended");
 
       addPoints();
       filterPoints();
+      transforms->input_images->addTime("frontend_filter_ended");
     }
 
     if (output_queue && frame_counter % config.optical_flow_skip_frames == 0) {
@@ -473,6 +482,7 @@ class PatchOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
   void addPoints() {
     Masks& ms0 = transforms->input_images->masks.at(0);
     Keypoints kpts0 = addPointsForCamera(0);
+    transforms->input_images->addTime("frontend_detection_cam0_ended");
 
     for (size_t i = 1; i < getNumCams(); i++) {
       Masks& ms = transforms->input_images->masks.at(i);
@@ -491,6 +501,8 @@ class PatchOpticalFlow final : public OpticalFlowTyped<Scalar, Pattern> {
       ms += cam0OverlapCellsMasksForCam(i);
       Keypoints kpts_no = addPointsForCamera(i);
     }
+    transforms->input_images->addTime("frontend_matching_ended");
+    transforms->input_images->addTime("frontend_detection_cami_ended");
   }
 
   void filterPointsForCam(int cam_id) {
