@@ -45,6 +45,53 @@ RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_p
   impl_->rec->log_static("/world", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
 }
 
+void RerunExporter::log_static_calib(const std::vector<CamCalib>& cams) {
+  if (!good()) return;
+  for (size_t i = 0; i < cams.size(); ++i) {
+    const CamCalib& c = cams[i];
+    const Eigen::Vector3d p = c.T_i_c.translation();
+    const Eigen::Quaterniond q = c.T_i_c.unit_quaternion();
+    const std::string base = "/world/rig_0/cam_" + std::to_string(i);
+
+    impl_->rec->log_static(
+        base,
+        rerun::Transform3D()
+            .with_translation({static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())})
+            .with_rotation(rerun::Quaternion::from_xyzw(
+                static_cast<float>(q.x()), static_cast<float>(q.y()), static_cast<float>(q.z()),
+                static_cast<float>(q.w()))));
+
+    // Linear pinhole approximation (Basalt cameras are KB4/radtan8/...; principal
+    // point is centered here — see the integration plan, Risk #5).
+    impl_->rec->log_static(
+        base + "/pinhole",
+        rerun::Pinhole::from_focal_length_and_resolution(
+            {c.fx, c.fy}, {static_cast<float>(c.width), static_cast<float>(c.height)})
+            .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
+            .with_image_plane_distance(0.1f));
+  }
+}
+
+void RerunExporter::log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions) {
+  if (!good() || gt_positions.empty()) return;
+
+  std::vector<rerun::datatypes::Vec3D> pts;
+  pts.reserve(gt_positions.size());
+  for (const auto& g : gt_positions) {
+    pts.push_back({static_cast<float>(g.x()), static_cast<float>(g.y()), static_cast<float>(g.z())});
+  }
+  impl_->rec->log_static(
+      "/world/rig_0_path",
+      rerun::LineStrips3D(rerun::components::LineStrip3D(pts)).with_colors(rerun::Color(0x3c, 0xb0, 0x43)));
+
+  const std::vector<rerun::datatypes::Vec3D> ends = {pts.front(), pts.back()};
+  impl_->rec->log_static(
+      "/world/rig_0_path/endpoints",
+      rerun::Points3D(ends)
+          .with_colors({rerun::Color(0x2e, 0xcc, 0x40), rerun::Color(0xff, 0x41, 0x36)})  // start green / end red
+          .with_radii({0.02f, 0.02f}));
+}
+
 void RerunExporter::log_state(const Sophus::SE3d& T_w_i, int64_t t_ns, int64_t start_t_ns) {
   if (!good()) return;
 

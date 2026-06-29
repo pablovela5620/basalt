@@ -17,10 +17,20 @@ stream lifecycle and the static world coordinate frame; per-frame logging
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include <Eigen/Core>
 #include <sophus/se3.hpp>
 
 namespace basalt {
+
+/// Per-camera static calibration, extracted from `basalt::Calibration` at the
+/// call site so this header stays free of the templated calibration type.
+struct CamCalib {
+  Sophus::SE3d T_i_c;  ///< rig/IMU <- camera extrinsic
+  float fx, fy, cx, cy;
+  int width, height;
+};
 
 /// Thin owner of a `rerun::RecordingStream`. Non-copyable.
 class RerunExporter {
@@ -34,6 +44,16 @@ class RerunExporter {
 
   RerunExporter(const RerunExporter&) = delete;
   RerunExporter& operator=(const RerunExporter&) = delete;
+
+  /// Log the static camera rig: for each camera, a `Transform3D` at
+  /// `/world/rig_0/cam_{i}` (the rig<-cam extrinsic) and a `Pinhole` at
+  /// `/world/rig_0/cam_{i}/pinhole` (linear intrinsics + resolution). Static.
+  void log_static_calib(const std::vector<CamCalib>& cams);
+
+  /// Log the ground-truth trajectory as a static green polyline at
+  /// `/world/rig_0_path`, with start/end markers at `/world/rig_0_path/endpoints`.
+  /// No-op if `gt_positions` is empty.
+  void log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions);
 
   /// Log one estimated state at `t_ns`. Sets the `frame` (monotonic per call)
   /// and `sensor_time` (= (t_ns - start_t_ns) seconds) timelines, then logs the

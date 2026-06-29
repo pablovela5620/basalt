@@ -365,6 +365,21 @@ struct basalt_vio_ui : vis::VIOUIBase {
         rerun_exporter.reset();
       }
     }
+    if (rerun_exporter) {
+      // Static camera rig (extrinsics + linear-pinhole intrinsics).
+      std::vector<CamCalib> cams;
+      for (size_t i = 0; i < calib.intrinsics.size(); i++) {
+        // Materialize into a concrete vector (do NOT keep the lazy cast<>()
+        // expression — it would dangle on getParam()'s temporary).
+        const Eigen::VectorXd intr = calib.intrinsics[i].getParam();
+        const Eigen::Vector2i res = calib.resolution[i];
+        cams.push_back(CamCalib{calib.T_i_c[i], static_cast<float>(intr[0]), static_cast<float>(intr[1]),
+                                static_cast<float>(intr[2]), static_cast<float>(intr[3]), res[0], res[1]});
+      }
+      rerun_exporter->log_static_calib(cams);
+      // GT path is logged later, after alignSVD has transformed gt_t_w_i into
+      // the estimate's frame, so the two trajectories overlay (see stop()).
+    }
 #endif
 
     basalt::MargDataSaver::Ptr marg_data_saver;
@@ -789,6 +804,17 @@ struct basalt_vio_ui : vis::VIOUIBase {
     // TODO: remove this unconditional call (here for debugging);
     const double ate_rmse = basalt::alignSVD(vio_t_ns, vio_t_w_i, gt_t_ns, gt_t_w_i);
     if (ate_rmse < 0) std::cout << "error: Trajectory could not be aligned with ground truth!" << std::endl;
+
+#ifdef BASALT_RERUN
+    // alignSVD transforms gt_t_w_i into the estimate's frame (the estimate is
+    // its const input), so logging the GT path now overlays it on the estimated
+    // trajectory at /world/runs/basalt/trajectory.
+    if (rerun_exporter && !gt_t_w_i.empty()) {
+      std::vector<Eigen::Vector3d> gt_pts(gt_t_w_i.begin(), gt_t_w_i.end());
+      rerun_exporter->log_gt_path(gt_pts);
+      rerun_exporter->flush();
+    }
+#endif
 
     vio->debug_finalize();
     std::cout << "Total runtime: {:.3f}s\n"_format(duration_total);
