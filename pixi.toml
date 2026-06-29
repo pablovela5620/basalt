@@ -1,0 +1,87 @@
+[workspace]
+name = "basalt"
+version = "0.1.0"
+description = "Pixi-only build of Basalt VIO/SLAM (C++ reference) — fixture for the Basalt-Mojo port"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64"]
+
+# ---------------------------------------------------------------------------
+# IMPORTANT (numerical reproducibility): Eigen, Sophus and cereal are NOT taken
+# from conda-forge. The build is pinned to the BUNDLED Eigen 5.0.1 / Sophus /
+# cereal under thirdparty/basalt-headers/thirdparty/* (EIGEN_ROOT). Run the
+# `submodules` task (git submodule update --init --recursive) before configuring.
+#
+# PLATFORMS: linux-64 + osx-arm64 (Apple Silicon). Everything resolves from
+# conda-forge. On macOS the only non-pixi prerequisite is the Xcode Command Line
+# Tools (the macOS SDK / system OpenGL+Cocoa frameworks) that conda's clang and
+# Pangolin link against — Apple does not redistribute the SDK via conda. The
+# Linux GL/X11/Wayland/mold packages below are gated to linux-64 because macOS
+# uses Cocoa + the system OpenGL framework (no X11/Wayland/mesa, no mold).
+# ---------------------------------------------------------------------------
+
+[dependencies]
+# --- toolchain (Linux: gcc+libstdc++ / macOS: clang+libc++, both from conda) ---
+cxx-compiler = ">=1.7"
+c-compiler = ">=1.7"
+cmake = ">=3.24,<4"  # project targets CMake 3.x; CMake 4.x rejects opengv/Pangolin source-dir include paths
+ninja = "*"
+pkg-config = "*"
+git = "*"
+
+# --- core libraries required by find_package() (cross-platform) ---
+tbb-devel = "*"     # find_package(TBB): headers + libs (oneTBB)
+libopencv = ">=4.5,<5" # OpenCV core/imgproc/calib3d/highgui; Basalt targets OpenCV 2/3/4 (not 5) — keep both platforms on 4.x
+fmt = "8.*"         # pinned to the version Basalt/Sophus are tested against (FMT_DEPRECATED_OSTREAM workaround)
+
+# --- rosbag2 (enabled when yaml-cpp + sqlite found) + rosbag1 transitive deps ---
+yaml-cpp = "*"
+sqlite = "*"
+libboost-devel = "*"  # only used transitively by ROS1 rosbag (thirdparty/ros)
+lz4-c = "*"
+bzip2 = "*"
+
+# --- GL loading for Pangolin (cross-platform) ---
+glew = "*"
+epoxy = "*"
+# Pangolin (pango_geometry) does its own find_package(Eigen3) needing an Eigen3Config.cmake.
+# conda-forge eigen is 5.0.1 — IDENTICAL to the bundled Eigen — so this just makes Eigen3
+# discoverable hermetically (no reliance on a system Eigen3); Basalt still uses the bundled
+# copy via EIGEN_ROOT. Without this, configure only worked where a system Eigen3 happened to exist.
+eigen = "5.0.1.*"
+
+[target.linux-64.dependencies]
+# Linux-only: faster linker + the X11/Wayland/Mesa GL stack Pangolin needs on Linux.
+# macOS uses the system OpenGL.framework + Cocoa windowing instead, so none of these apply.
+mold = "*"             # auto-detected by CMake (-fuse-ld=mold); Linux ELF only
+libgl-devel = "*"
+libegl-devel = "*"
+libopengl-devel = "*"
+mesalib = "*"
+wayland = "*"
+wayland-protocols = "*"
+libxkbcommon = "*"
+xorg-libx11 = "*"
+xorg-libxrandr = "*"
+xorg-libxi = "*"
+xorg-libxcursor = "*"
+xorg-libxinerama = "*"
+xorg-libxext = "*"
+xorg-libxfixes = "*"
+
+[tasks]
+# 1) fetch all vendored deps (basalt-headers + nested Eigen5.0.1/Sophus/cereal, opengv, Pangolin, apriltag, ros, fastcdr, CLI11, magic_enum)
+submodules = "git submodule update --init --recursive"
+
+# 2) configure with the 'development' preset (RelWithDebInfo, all executables incl. basalt_vio).
+#    CMAKE_PREFIX_PATH=$CONDA_PREFIX makes find_package() resolve TBB/OpenCV/fmt/yaml-cpp/SQLite3 to the pixi env.
+configure = "cmake --preset development -DCMAKE_PREFIX_PATH=$CONDA_PREFIX"
+
+# 3) build the standalone VIO runner (pulls basalt_internal + Pangolin/opengv/apriltag/ros/fastcdr as needed)
+build = "cmake --build build --target basalt_vio -j"
+
+# build everything (lib + all executables)
+build-all = "cmake --build build -j"
+
+# 4) run headless VIO on a Monado/EuRoC-layout dataset, e.g.:
+#    DATASET=datasets/MOO09_short_1_updown pixi run vio
+configure-then-build = { depends-on = ["configure", "build"] }
