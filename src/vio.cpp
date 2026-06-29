@@ -78,6 +78,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <basalt/utils/format.hpp>
 #include <basalt/utils/time_utils.hpp>
 
+#ifdef BASALT_RERUN
+#include <basalt/utils/rerun_export.h>
+#endif
+
 // enable the "..."_format(...) string literal
 using namespace basalt::literals;
 using namespace basalt;
@@ -179,6 +183,14 @@ struct basalt_vio_ui : vis::VIOUIBase {
   bool aborted = false;
   bool initially_aligned = false;
 
+  // Rerun (rerun.io) visualization backend (orthogonal to the Pangolin GUI).
+  bool enable_rerun = false;
+  std::string rerun_rrd_path;
+  std::string rerun_app_id = "basalt_vio";
+#ifdef BASALT_RERUN
+  std::unique_ptr<RerunExporter> rerun_exporter;
+#endif
+
   thread feed_images_thread;
   thread feed_imu_thread;
   thread vis_thread;
@@ -245,6 +257,9 @@ struct basalt_vio_ui : vis::VIOUIBase {
     CLI::App app{"Basalt CLI"};
 
     app.add_option("--show-gui", show_gui, "Show GUI");
+    app.add_flag("--rerun", enable_rerun, "Log visualization to a rerun.io recording");
+    app.add_option("--rerun-rrd", rerun_rrd_path, "Save the rerun recording to this .rrd path (implies --rerun)");
+    app.add_option("--rerun-app-id", rerun_app_id, "Rerun application id (default: basalt_vio)");
     app.add_option("--cam-calib", cam_calib_path, "Ground-truth camera calibration used for simulation.")->required();
     app.add_option("--dataset-path", dataset_path, "Path to dataset.")->required();
     app.add_option("--dataset-type", dataset_type, "Dataset type <euroc, bag>.");
@@ -339,6 +354,18 @@ struct basalt_vio_ui : vis::VIOUIBase {
       vio->opt_flow_state_queue = &opt_flow->input_state_queue;
       vio->opt_flow_lm_bundle_queue = &opt_flow->input_lm_bundle_queue;
     }
+
+#ifdef BASALT_RERUN
+    if (!rerun_rrd_path.empty()) enable_rerun = true;
+    if (enable_rerun) {
+      // save() takes precedence; spawn only when no .rrd path was given.
+      rerun_exporter = std::make_unique<RerunExporter>(rerun_app_id, rerun_rrd_path, /*spawn=*/true);
+      if (!rerun_exporter->good()) {
+        std::cerr << "[rerun] recording disabled (no sink attached)" << std::endl;
+        rerun_exporter.reset();
+      }
+    }
+#endif
 
     basalt::MargDataSaver::Ptr marg_data_saver;
 
@@ -741,6 +768,10 @@ struct basalt_vio_ui : vis::VIOUIBase {
     if (show_gui) vis_thread.join();
     if (!deterministic) state_consumer_thread.join();
     if (print_queue) queues_printer_thread.join();
+
+#ifdef BASALT_RERUN
+    if (rerun_exporter) rerun_exporter->flush();
+#endif
 
     // after joining all threads, print final queue sizes.
     if (print_queue) {

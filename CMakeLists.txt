@@ -323,6 +323,16 @@ include(CMakeDependentOption)
 cmake_dependent_option(BASALT_ENABLE_ROSBAG2 "Enable rosbag2 feature" ON "yaml-cpp_FOUND AND SQLite3_FOUND" OFF)
 message(STATUS "BASALT_ENABLE_ROSBAG2: ${BASALT_ENABLE_ROSBAG2}")
 
+# Rerun (rerun.io) visualization backend. The C++ SDK comes from conda-forge
+# (librerun-sdk); find_package resolves it from $CONDA_PREFIX (CMAKE_PREFIX_PATH
+# is set by the pixi `configure` task). Linked onto the basalt_vio executable
+# only (see below) — basalt_internal stays Rerun-free.
+option(BASALT_ENABLE_RERUN "Build Rerun visualization backend" ON)
+if(BASALT_ENABLE_RERUN)
+  find_package(rerun_sdk REQUIRED)
+  message(STATUS "Found rerun_sdk ${rerun_sdk_VERSION}")
+endif()
+
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5) # TODO: Patch for opengv, sophus, ros
 add_subdirectory(thirdparty)
 set(CMAKE_POLICY_VERSION_MINIMUM)
@@ -517,6 +527,11 @@ if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
 
   add_executable(basalt_vio src/vio.cpp)
   target_link_libraries(basalt_vio basalt_internal pangolin basalt::cli11)
+  if(BASALT_ENABLE_RERUN)
+    target_sources(basalt_vio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_export.cpp)
+    target_link_libraries(basalt_vio rerun_sdk)
+    target_compile_definitions(basalt_vio PRIVATE BASALT_RERUN)
+  endif()
 
   add_executable(basalt_time_alignment src/time_alignment.cpp)
   target_link_libraries(basalt_time_alignment basalt_internal pangolin basalt::cli11)

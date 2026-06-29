@@ -48,6 +48,7 @@ epoxy = "*"
 # discoverable hermetically (no reliance on a system Eigen3); Basalt still uses the bundled
 # copy via EIGEN_ROOT. Without this, configure only worked where a system Eigen3 happened to exist.
 eigen = "5.0.1.*"
+librerun-sdk = "0.33.*"
 
 [target.linux-64.dependencies]
 # Linux-only: faster linker + the X11/Wayland/Mesa GL stack Pangolin needs on Linux.
