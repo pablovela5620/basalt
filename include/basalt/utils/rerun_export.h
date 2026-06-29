@@ -14,8 +14,11 @@ stream lifecycle and the static world coordinate frame; per-frame logging
 */
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
+
+#include <sophus/se3.hpp>
 
 namespace basalt {
 
@@ -31,6 +34,12 @@ class RerunExporter {
 
   RerunExporter(const RerunExporter&) = delete;
   RerunExporter& operator=(const RerunExporter&) = delete;
+
+  /// Log one estimated state at `t_ns`. Sets the `frame` (monotonic per call)
+  /// and `sensor_time` (= (t_ns - start_t_ns) seconds) timelines, then logs the
+  /// per-frame rig pose at `/world/rig_0` and appends to the growing estimated
+  /// trajectory polyline at `/world/runs/basalt/trajectory`. No-op if !good().
+  void log_state(const Sophus::SE3d& T_w_i, int64_t t_ns, int64_t start_t_ns);
 
   /// True if the underlying recording stream was created and a sink attached.
   bool good() const;

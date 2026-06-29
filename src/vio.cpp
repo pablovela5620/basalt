@@ -499,6 +499,10 @@ struct basalt_vio_ui : vis::VIOUIBase {
     vio_t_w_i.emplace_back(pos_w_i);
     vio_T_w_i.emplace_back(T_w_i);
 
+#ifdef BASALT_RERUN
+    if (rerun_exporter) rerun_exporter->log_state(T_w_i, t_ns, start_t_ns);
+#endif
+
     if (show_gui) {
       double t_s = (t_ns - start_t_ns) * 1e-9;
       log_vel.ScaledLog(t_s, {vel_w_i[0], vel_w_i[1], vel_w_i[2]});
