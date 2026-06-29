@@ -79,6 +79,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <basalt/utils/time_utils.hpp>
 
 #ifdef BASALT_RERUN
+#include <unordered_map>
+
 #include <basalt/utils/rerun_export.h>
 #endif
 
@@ -194,6 +196,7 @@ struct basalt_vio_ui : vis::VIOUIBase {
   thread feed_images_thread;
   thread feed_imu_thread;
   thread vis_thread;
+  thread rerun_vis_thread;
   thread ui_thread;
   thread state_consumer_thread;
   thread queues_printer_thread;
@@ -348,7 +351,7 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
       opt_flow->output_queue = &vio->vision_data_queue;
       opt_flow->show_gui = show_gui;
-      if (show_gui) vio->out_vis_queue = &out_vis_queue;
+      if (show_gui || enable_rerun || !rerun_rrd_path.empty()) vio->out_vis_queue = &out_vis_queue;
       vio->out_state_queue = &out_state_queue;
       vio->opt_flow_depth_guess_queue = &opt_flow->input_depth_queue;
       vio->opt_flow_state_queue = &opt_flow->input_state_queue;
@@ -447,6 +450,22 @@ struct basalt_vio_ui : vis::VIOUIBase {
         std::cout << "Finished t3" << std::endl;
       });
 
+#ifdef BASALT_RERUN
+    // Dedicated rerun consumer of the visualization queue (keypoints + 3D
+    // landmarks). Only when the Pangolin vis_thread is NOT running, so the two
+    // never race for the same queue. Terminates on the estimator's nullptr.
+    if (rerun_exporter && !show_gui) {
+      rerun_vis_thread = thread([&]() {
+        basalt::VioVisualizationData::Ptr data;
+        while (true) {
+          out_vis_queue.pop(data);
+          if (!data) break;
+          rerun_log_vis(data);
+        }
+      });
+    }
+#endif
+
     if (!deterministic) {
       state_consumer_thread = thread([&]() {
         while (pop_state()) continue;
@@ -534,7 +553,7 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
 #ifdef BASALT_RERUN
     if (rerun_exporter) {
-      rerun_exporter->begin_frame(t_ns, start_t_ns);
+      rerun_exporter->begin_frame(rerun_frame_index(t_ns), t_ns, start_t_ns);
       rerun_exporter->log_pose(T_w_i);
       rerun_exporter->log_metrics(vel_w_i, bg, ba);
       if (data->input_images) {
@@ -544,7 +563,6 @@ struct basalt_vio_ui : vis::VIOUIBase {
           if (img) rerun_exporter->log_image(int(cam), img->ptr, int(img->w), int(img->h), img->pitch);
         }
       }
-      rerun_exporter->end_frame();
     }
 #endif
 
@@ -558,6 +576,82 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
     return true;
   }
+
+#ifdef BASALT_RERUN
+  // Canonical frame index for a timestamp (shared by the state- and vis-queue
+  // consumers so both stamp the same physical frame on the `frame` timeline).
+  int64_t rerun_frame_index(int64_t t_ns) {
+    const auto& ts = vio_dataset->get_image_timestamps();
+    return int64_t(std::lower_bound(ts.begin(), ts.end(), t_ns) - ts.begin());
+  }
+
+  // Sample 8-bit intensity from Basalt's (8bit<<8) uint16 image at pixel (u,v),
+  // packed as 0xRRGGBBAA grey. Out-of-bounds / null -> opaque white.
+  static uint32_t rerun_pixel_rgba(const basalt::ManagedImage<uint16_t>* img, float u, float v) {
+    if (img == nullptr) return 0xffffffffu;
+    const long x = std::lround(u), y = std::lround(v);
+    if (x < 0 || y < 0 || x >= long(img->w) || y >= long(img->h)) return 0xffffffffu;
+    const uint32_t i8 = uint32_t((*img)(size_t(x), size_t(y)) >> 8);
+    return (i8 << 24) | (i8 << 16) | (i8 << 8) | 0xffu;
+  }
+
+  // Log 2D tracked keypoints (per camera) + the 3D landmark cloud from one
+  // visualization packet, coloring each point by the image pixel it sits on.
+  void rerun_log_vis(const basalt::VioVisualizationData::Ptr& data) {
+    if (!rerun_exporter || !data) return;
+    rerun_exporter->begin_frame(rerun_frame_index(data->t_ns), data->t_ns, start_t_ns);
+
+    const auto& ofr = data->opt_flow_res;
+    if (ofr) {
+      for (size_t cam = 0; cam < ofr->keypoints.size(); cam++) {
+        const basalt::ManagedImage<uint16_t>* img =
+            (ofr->input_images && cam < ofr->input_images->img_data.size())
+                ? ofr->input_images->img_data[cam].img.get()
+                : nullptr;
+        // 2D keypoints get a high-contrast color so they are visible ON the
+        // grayscale image (coloring them by the underlying pixel would make them
+        // blend in / vanish). The 3D landmark cloud below is image-colored.
+        constexpr uint32_t KP_COLOR = 0x39ff14ffu;  // neon green
+        std::vector<Eigen::Vector2f> uv;
+        std::vector<uint32_t> rgba;
+        uv.reserve(ofr->keypoints[cam].size());
+        rgba.reserve(ofr->keypoints[cam].size());
+        for (const auto& kv : ofr->keypoints[cam]) {
+          uv.push_back(kv.second.translation());
+          rgba.push_back(KP_COLOR);
+        }
+        (void)img;
+        rerun_exporter->log_keypoints(int(cam), uv, rgba);
+      }
+    }
+
+    if (!data->points.empty()) {
+      // Map landmark id -> cam0 observation pixel, to color each 3D point.
+      std::unordered_map<int, Eigen::Vector2f> obs0;
+      if (data->projections && !data->projections->empty()) {
+        for (const auto& pr : (*data->projections)[0]) obs0[int(pr[3])] = Eigen::Vector2f(float(pr[0]), float(pr[1]));
+      }
+      const basalt::ManagedImage<uint16_t>* img0 =
+          (ofr && ofr->input_images && !ofr->input_images->img_data.empty())
+              ? ofr->input_images->img_data[0].img.get()
+              : nullptr;
+      std::vector<Eigen::Vector3f> pts;
+      std::vector<uint32_t> rgba;
+      pts.reserve(data->points.size());
+      rgba.reserve(data->points.size());
+      for (size_t i = 0; i < data->points.size(); i++) {
+        pts.push_back(data->points[i].cast<float>());
+        uint32_t c = 0xffffffffu;
+        if (i < data->point_ids.size()) {
+          auto it = obs0.find(data->point_ids[i]);
+          if (it != obs0.end()) c = rerun_pixel_rgba(img0, it->second.x(), it->second.y());
+        }
+        rgba.push_back(c);
+      }
+      rerun_exporter->log_landmarks(pts, rgba);
+    }
+  }
+#endif
 
   void print_queue_fn() {
     std::cout << "opt_flow->input_img_queue " << opt_flow->input_img_queue.size() << " opt_flow->output_queue "
@@ -815,6 +909,7 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
     // join other threads
     if (show_gui) vis_thread.join();
+    if (rerun_vis_thread.joinable()) rerun_vis_thread.join();
     if (!deterministic) state_consumer_thread.join();
     if (print_queue) queues_printer_thread.join();
 

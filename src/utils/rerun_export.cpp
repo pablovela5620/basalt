@@ -20,8 +20,11 @@ namespace basalt {
 struct RerunExporter::Impl {
   std::unique_ptr<rerun::RecordingStream> rec;
   bool ok = false;
-  int64_t frame_count = 0;
-  std::vector<rerun::datatypes::Vec3D> traj;  // accumulated estimated positions
+  std::vector<rerun::datatypes::Vec3D> traj;  // accumulated estimated positions (state thread only)
+
+  static rerun::Color color_rgba(uint32_t c) {
+    return rerun::Color(uint8_t(c >> 24), uint8_t(c >> 16), uint8_t(c >> 8), uint8_t(c));
+  }
 };
 
 RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_path, bool spawn)
@@ -107,9 +110,9 @@ void RerunExporter::log_imu(const std::vector<int64_t>& t_ns, const std::vector<
   }
 }
 
-void RerunExporter::begin_frame(int64_t t_ns, int64_t start_t_ns) {
+void RerunExporter::begin_frame(int64_t frame_idx, int64_t t_ns, int64_t start_t_ns) {
   if (!good()) return;
-  impl_->rec->set_time_sequence("frame", impl_->frame_count);
+  impl_->rec->set_time_sequence("frame", frame_idx);
   impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns - start_t_ns) * 1e-9);
 }
 
@@ -159,9 +162,34 @@ void RerunExporter::log_metrics(const Eigen::Vector3d& vel, const Eigen::Vector3
                   rerun::Scalars({bias_accel.x(), bias_accel.y(), bias_accel.z()}));
 }
 
-void RerunExporter::end_frame() {
-  if (!good()) return;
-  ++impl_->frame_count;
+void RerunExporter::log_keypoints(int cam, const std::vector<Eigen::Vector2f>& uv,
+                                  const std::vector<uint32_t>& rgba) {
+  if (!good() || uv.empty()) return;
+  std::vector<rerun::datatypes::Vec2D> pts;
+  std::vector<rerun::Color> colors;
+  pts.reserve(uv.size());
+  colors.reserve(uv.size());
+  for (size_t i = 0; i < uv.size(); ++i) {
+    pts.push_back({uv[i].x(), uv[i].y()});
+    colors.push_back(Impl::color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
+  }
+  const std::string path = "/world/rig_0/cam_" + std::to_string(cam) + "/pinhole/keypoints";
+  impl_->rec->log(path, rerun::Points2D(pts).with_colors(colors).with_radii(3.0f));
+}
+
+void RerunExporter::log_landmarks(const std::vector<Eigen::Vector3f>& points,
+                                  const std::vector<uint32_t>& rgba) {
+  if (!good() || points.empty()) return;
+  std::vector<rerun::datatypes::Vec3D> pts;
+  std::vector<rerun::Color> colors;
+  pts.reserve(points.size());
+  colors.reserve(points.size());
+  for (size_t i = 0; i < points.size(); ++i) {
+    pts.push_back({points[i].x(), points[i].y(), points[i].z()});
+    colors.push_back(Impl::color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
+  }
+  impl_->rec->log("/world/rig_0/landmarks",
+                  rerun::Points3D(pts).with_colors(colors).with_radii(0.02f));
 }
 
 RerunExporter::~RerunExporter() { flush(); }

@@ -61,10 +61,12 @@ class RerunExporter {
   void log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
                const std::vector<Eigen::Vector3d>& accel, int64_t start_t_ns);
 
-  // --- per-frame logging (call begin_frame once, then the log_* below, then end_frame) ---
+  // --- per-frame logging (call begin_frame, then any log_* below). begin_frame
+  // takes an explicit frame index (derived from t_ns) so the state-queue and
+  // vis-queue consumer threads stamp the same physical frame identically. ---
 
-  /// Set the `frame` (current frame index) + `sensor_time` timelines for the frame.
-  void begin_frame(int64_t t_ns, int64_t start_t_ns);
+  /// Set the `frame` (= frame_idx) + `sensor_time` timelines for the frame.
+  void begin_frame(int64_t frame_idx, int64_t t_ns, int64_t start_t_ns);
 
   /// Per-frame rig pose at `/world/rig_0` + append to `/world/runs/basalt/trajectory`.
   void log_pose(const Sophus::SE3d& T_w_i);
@@ -79,8 +81,15 @@ class RerunExporter {
   void log_metrics(const Eigen::Vector3d& vel, const Eigen::Vector3d& bias_gyro,
                    const Eigen::Vector3d& bias_accel);
 
-  /// Advance the per-frame counter (the `frame` timeline value).
-  void end_frame();
+  /// 2D tracked keypoints for one camera at `/world/rig_0/cam_{cam}/pinhole/keypoints`
+  /// (`Points2D`). `rgba` holds one packed `0xRRGGBBAA` color per point (sampled
+  /// from the image at the keypoint pixel). `uv` and `rgba` are parallel.
+  void log_keypoints(int cam, const std::vector<Eigen::Vector2f>& uv,
+                     const std::vector<uint32_t>& rgba);
+
+  /// 3D landmark cloud at `/world/rig_0/landmarks` (`Points3D`), one packed
+  /// `0xRRGGBBAA` color per point. `points` and `rgba` are parallel.
+  void log_landmarks(const std::vector<Eigen::Vector3f>& points, const std::vector<uint32_t>& rgba);
 
   /// True if the underlying recording stream was created and a sink attached.
   bool good() const;
