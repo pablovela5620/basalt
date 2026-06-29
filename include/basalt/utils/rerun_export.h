@@ -87,8 +87,14 @@ class RerunExporter {
   void log_keypoints(int cam, const std::vector<Eigen::Vector2f>& uv,
                      const std::vector<uint32_t>& rgba);
 
-  /// 3D landmark cloud at `/world/rig_0/landmarks` (`Points3D`), one packed
-  /// `0xRRGGBBAA` color per point. `points` and `rgba` are parallel.
+  /// 2D reprojections of the 3D landmarks for one camera at
+  /// `/world/rig_0/cam_{cam}/pinhole/observations` (`Points2D`). These should
+  /// land on the tracked keypoints (small reprojection error) — the visual proof
+  /// the 3D map and the 2D features correspond.
+  void log_observations(int cam, const std::vector<Eigen::Vector2f>& uv, uint32_t rgba);
+
+  /// 3D landmark cloud at `/world/landmarks` (`Points3D`, world frame), one
+  /// packed `0xRRGGBBAA` color per point. `points` and `rgba` are parallel.
   void log_landmarks(const std::vector<Eigen::Vector3f>& points, const std::vector<uint32_t>& rgba);
 
   /// True if the underlying recording stream was created and a sink attached.

@@ -177,6 +177,15 @@ void RerunExporter::log_keypoints(int cam, const std::vector<Eigen::Vector2f>& u
   impl_->rec->log(path, rerun::Points2D(pts).with_colors(colors).with_radii(3.0f));
 }
 
+void RerunExporter::log_observations(int cam, const std::vector<Eigen::Vector2f>& uv, uint32_t rgba) {
+  if (!good() || uv.empty()) return;
+  std::vector<rerun::datatypes::Vec2D> pts;
+  pts.reserve(uv.size());
+  for (const auto& p : uv) pts.push_back({p.x(), p.y()});
+  const std::string path = "/world/rig_0/cam_" + std::to_string(cam) + "/pinhole/observations";
+  impl_->rec->log(path, rerun::Points2D(pts).with_colors(Impl::color_rgba(rgba)).with_radii(2.0f));
+}
+
 void RerunExporter::log_landmarks(const std::vector<Eigen::Vector3f>& points,
                                   const std::vector<uint32_t>& rgba) {
   if (!good() || points.empty()) return;
@@ -188,7 +197,10 @@ void RerunExporter::log_landmarks(const std::vector<Eigen::Vector3f>& points,
     pts.push_back({points[i].x(), points[i].y(), points[i].z()});
     colors.push_back(Impl::color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
   }
-  impl_->rec->log("/world/rig_0/landmarks",
+  // World frame (NOT under the moving /world/rig_0 transform — these points are
+  // already in world coordinates; parenting them to the rig would re-apply the
+  // camera pose and make the cloud swim with the camera).
+  impl_->rec->log("/world/landmarks",
                   rerun::Points3D(pts).with_colors(colors).with_radii(0.02f));
 }
 

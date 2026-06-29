@@ -191,6 +191,7 @@ struct basalt_vio_ui : vis::VIOUIBase {
   std::string rerun_app_id = "basalt_vio";
 #ifdef BASALT_RERUN
   std::unique_ptr<RerunExporter> rerun_exporter;
+  bool rerun_reproj_checked = false;  // one-shot 2D/3D reprojection-error validation
 #endif
 
   thread feed_images_thread;
@@ -622,6 +623,41 @@ struct basalt_vio_ui : vis::VIOUIBase {
         }
         (void)img;
         rerun_exporter->log_keypoints(int(cam), uv, rgba);
+      }
+    }
+
+    // 2D reprojections of the 3D landmarks (Basalt's distorted projections),
+    // overlaid on the image — these should land on the green tracked keypoints.
+    if (data->projections) {
+      for (size_t cam = 0; cam < data->projections->size(); cam++) {
+        const auto& projs = (*data->projections)[cam];
+        std::vector<Eigen::Vector2f> obs_uv;
+        obs_uv.reserve(projs.size());
+        for (const auto& pr : projs) obs_uv.emplace_back(float(pr[0]), float(pr[1]));
+        rerun_exporter->log_observations(int(cam), obs_uv, 0xff00ffffu);  // magenta
+      }
+
+      // One-shot numerical validation: how far the reprojected 3D landmarks land
+      // from the tracked keypoints (matched by landmark id). Small => 2D and 3D
+      // are consistent.
+      if (!rerun_reproj_checked && ofr) {
+        rerun_reproj_checked = true;
+        for (size_t cam = 0; cam < data->projections->size() && cam < ofr->keypoints.size(); cam++) {
+          double sum = 0.0, mx = 0.0;
+          int n = 0;
+          for (const auto& pr : (*data->projections)[cam]) {
+            auto it = ofr->keypoints[cam].find(size_t(pr[3]));
+            if (it == ofr->keypoints[cam].end()) continue;
+            const Eigen::Vector2f kp = it->second.translation();
+            const double e = std::hypot(double(pr[0]) - kp.x(), double(pr[1]) - kp.y());
+            sum += e;
+            mx = std::max(mx, e);
+            n++;
+          }
+          if (n > 0)
+            std::cerr << "[rerun] cam" << cam << " reprojection error vs keypoints: mean=" << (sum / n)
+                      << "px max=" << mx << "px over " << n << " obs\n";
+        }
       }
     }
 
