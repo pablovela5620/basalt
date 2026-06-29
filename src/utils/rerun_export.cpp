@@ -7,7 +7,11 @@ in `basalt_vio` talks to `basalt::RerunExporter` through the PIMPL declared in
 */
 #include "basalt/utils/rerun_export.h"
 
+#include <algorithm>
 #include <iostream>
+
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include <rerun.hpp>
 
@@ -92,12 +96,25 @@ void RerunExporter::log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions
           .with_radii({0.02f, 0.02f}));
 }
 
-void RerunExporter::log_state(const Sophus::SE3d& T_w_i, int64_t t_ns, int64_t start_t_ns) {
+void RerunExporter::log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
+                            const std::vector<Eigen::Vector3d>& accel, int64_t start_t_ns) {
   if (!good()) return;
+  const size_t n = std::min(t_ns.size(), std::min(gyro.size(), accel.size()));
+  for (size_t i = 0; i < n; ++i) {
+    impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns[i] - start_t_ns) * 1e-9);
+    impl_->rec->log("/world/rig_0/imu_0/gyro", rerun::Scalars({gyro[i].x(), gyro[i].y(), gyro[i].z()}));
+    impl_->rec->log("/world/rig_0/imu_0/accel", rerun::Scalars({accel[i].x(), accel[i].y(), accel[i].z()}));
+  }
+}
 
+void RerunExporter::begin_frame(int64_t t_ns, int64_t start_t_ns) {
+  if (!good()) return;
   impl_->rec->set_time_sequence("frame", impl_->frame_count);
   impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns - start_t_ns) * 1e-9);
+}
 
+void RerunExporter::log_pose(const Sophus::SE3d& T_w_i) {
+  if (!good()) return;
   const Eigen::Vector3d p = T_w_i.translation();
   const Eigen::Quaterniond q = T_w_i.unit_quaternion();
 
@@ -118,7 +135,32 @@ void RerunExporter::log_state(const Sophus::SE3d& T_w_i, int64_t t_ns, int64_t s
       "/world/runs/basalt/trajectory",
       rerun::LineStrips3D(rerun::components::LineStrip3D(impl_->traj))
           .with_colors(rerun::Color(0xff, 0xa5, 0x00)));
+}
 
+void RerunExporter::log_image(int cam, const uint16_t* data, int width, int height, size_t pitch_bytes) {
+  if (!good() || data == nullptr) return;
+  // Basalt stores 8-bit sources as (v << 8); recover 8-bit, then JPEG-encode.
+  const cv::Mat m16(height, width, CV_16UC1, const_cast<uint16_t*>(data), pitch_bytes);
+  cv::Mat m8;
+  m16.convertTo(m8, CV_8UC1, 1.0 / 256.0);
+  std::vector<uint8_t> jpg;
+  if (!cv::imencode(".jpg", m8, jpg)) return;
+  const std::string path = "/world/rig_0/cam_" + std::to_string(cam) + "/pinhole/image";
+  impl_->rec->log(path, rerun::EncodedImage::from_bytes(jpg, rerun::components::MediaType::jpeg()));
+}
+
+void RerunExporter::log_metrics(const Eigen::Vector3d& vel, const Eigen::Vector3d& bias_gyro,
+                                const Eigen::Vector3d& bias_accel) {
+  if (!good()) return;
+  impl_->rec->log("/world/metrics/velocity", rerun::Scalars({vel.x(), vel.y(), vel.z()}));
+  impl_->rec->log("/world/rig_0/imu_0/bias_gyro",
+                  rerun::Scalars({bias_gyro.x(), bias_gyro.y(), bias_gyro.z()}));
+  impl_->rec->log("/world/rig_0/imu_0/bias_accel",
+                  rerun::Scalars({bias_accel.x(), bias_accel.y(), bias_accel.z()}));
+}
+
+void RerunExporter::end_frame() {
+  if (!good()) return;
   ++impl_->frame_count;
 }
 

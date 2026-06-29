@@ -55,11 +55,32 @@ class RerunExporter {
   /// No-op if `gt_positions` is empty.
   void log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions);
 
-  /// Log one estimated state at `t_ns`. Sets the `frame` (monotonic per call)
-  /// and `sensor_time` (= (t_ns - start_t_ns) seconds) timelines, then logs the
-  /// per-frame rig pose at `/world/rig_0` and appends to the growing estimated
-  /// trajectory polyline at `/world/runs/basalt/trajectory`. No-op if !good().
-  void log_state(const Sophus::SE3d& T_w_i, int64_t t_ns, int64_t start_t_ns);
+  /// Log the full raw IMU stream (gyro rad/s, accel m/s²) as two
+  /// multi-component `Scalars` at `/world/rig_0/imu_0/{gyro,accel}` on the
+  /// `sensor_time` timeline. `t_ns`, `gyro`, `accel` are parallel arrays.
+  void log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
+               const std::vector<Eigen::Vector3d>& accel, int64_t start_t_ns);
+
+  // --- per-frame logging (call begin_frame once, then the log_* below, then end_frame) ---
+
+  /// Set the `frame` (current frame index) + `sensor_time` timelines for the frame.
+  void begin_frame(int64_t t_ns, int64_t start_t_ns);
+
+  /// Per-frame rig pose at `/world/rig_0` + append to `/world/runs/basalt/trajectory`.
+  void log_pose(const Sophus::SE3d& T_w_i);
+
+  /// Per-camera input image at `/world/rig_0/cam_{cam}/pinhole/image`. `data` is
+  /// Basalt's 16-bit grayscale buffer (8-bit sources are stored `<< 8`); it is
+  /// downconverted to 8-bit and JPEG-encoded before logging as `EncodedImage`.
+  void log_image(int cam, const uint16_t* data, int width, int height, size_t pitch_bytes);
+
+  /// Per-frame VIO scalars: velocity at `/world/metrics/velocity` and the IMU
+  /// bias estimates at `/world/rig_0/imu_0/bias_{gyro,accel}`.
+  void log_metrics(const Eigen::Vector3d& vel, const Eigen::Vector3d& bias_gyro,
+                   const Eigen::Vector3d& bias_accel);
+
+  /// Advance the per-frame counter (the `frame` timeline value).
+  void end_frame();
 
   /// True if the underlying recording stream was created and a sink attached.
   bool good() const;

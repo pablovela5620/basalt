@@ -377,6 +377,24 @@ struct basalt_vio_ui : vis::VIOUIBase {
                                 static_cast<float>(intr[2]), static_cast<float>(intr[3]), res[0], res[1]});
       }
       rerun_exporter->log_static_calib(cams);
+
+      // Raw IMU stream (gyro + accel share timestamps; see feed_imu), logged
+      // once on the sensor_time timeline.
+      const auto& gyro_data = vio_dataset->get_gyro_data();
+      const auto& accel_data = vio_dataset->get_accel_data();
+      const size_t n_imu = std::min(gyro_data.size(), accel_data.size());
+      std::vector<int64_t> imu_t_ns;
+      std::vector<Eigen::Vector3d> imu_gyro, imu_accel;
+      imu_t_ns.reserve(n_imu);
+      imu_gyro.reserve(n_imu);
+      imu_accel.reserve(n_imu);
+      for (size_t i = 0; i < n_imu; i++) {
+        imu_t_ns.push_back(gyro_data[i].timestamp_ns);
+        imu_gyro.push_back(gyro_data[i].data);
+        imu_accel.push_back(accel_data[i].data);
+      }
+      rerun_exporter->log_imu(imu_t_ns, imu_gyro, imu_accel, start_t_ns);
+
       // GT path is logged later, after alignSVD has transformed gt_t_w_i into
       // the estimate's frame, so the two trajectories overlay (see stop()).
     }
@@ -515,7 +533,19 @@ struct basalt_vio_ui : vis::VIOUIBase {
     vio_T_w_i.emplace_back(T_w_i);
 
 #ifdef BASALT_RERUN
-    if (rerun_exporter) rerun_exporter->log_state(T_w_i, t_ns, start_t_ns);
+    if (rerun_exporter) {
+      rerun_exporter->begin_frame(t_ns, start_t_ns);
+      rerun_exporter->log_pose(T_w_i);
+      rerun_exporter->log_metrics(vel_w_i, bg, ba);
+      if (data->input_images) {
+        const auto& img_data = data->input_images->img_data;
+        for (size_t cam = 0; cam < img_data.size(); cam++) {
+          const auto& img = img_data[cam].img;
+          if (img) rerun_exporter->log_image(int(cam), img->ptr, int(img->w), int(img->h), img->pitch);
+        }
+      }
+      rerun_exporter->end_frame();
+    }
 #endif
 
     if (show_gui) {

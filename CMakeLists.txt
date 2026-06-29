@@ -529,7 +529,7 @@ if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
   target_link_libraries(basalt_vio basalt_internal pangolin basalt::cli11)
   if(BASALT_ENABLE_RERUN)
     target_sources(basalt_vio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_export.cpp)
-    target_link_libraries(basalt_vio rerun_sdk)
+    target_link_libraries(basalt_vio rerun_sdk basalt::opencv)  # opencv for JPEG image encoding
     target_compile_definitions(basalt_vio PRIVATE BASALT_RERUN)
   endif()
 
