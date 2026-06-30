@@ -5,6 +5,41 @@ for tracking XR devices with
 [Monado](https://gitlab.freedesktop.org/monado/monado). Many thanks to the
 Basalt authors.
 
+## This fork — pixi packaging & upstream mirroring
+
+This repository (`pablovela5620/basalt`) is a **packaging fork** of the Monado
+Basalt fork ([`mateosss/basalt`](https://gitlab.freedesktop.org/mateosss/basalt)).
+It adds a one-command [pixi](https://pixi.sh) build and an optional
+[rerun.io](https://rerun.io) visualization backend, while staying faithful to
+upstream. There are two branches:
+
+- **`main`** — a pristine mirror of upstream `mateosss/basalt`. Never committed
+  to directly; only updated via `git pull upstream main`.
+- **`pixi`** *(default)* — the branch you build: `main` **plus** additive pixi
+  packaging (`pixi.toml`/`pixi.lock`, `.gitignore`) and the rerun visualization
+  backend (opt-in at runtime with `--rerun`; compile-gated by
+  `BASALT_ENABLE_RERUN`).
+
+**Keeping it mirrored with upstream:**
+
+```bash
+git remote add upstream https://gitlab.freedesktop.org/mateosss/basalt.git  # once
+git checkout main && git pull upstream main        # refresh the mirror
+git checkout pixi && git rebase main               # replay packaging + rerun viz
+git push --force-with-lease origin pixi
+```
+
+Rebases onto a newer upstream stay low-conflict because the pixi changes are
+purely additive and the rerun changes are isolated — `#ifdef BASALT_RERUN`
+blocks in `src/vio.cpp` plus two self-contained `rerun_export.*` files (the SLAM
+core is untouched).
+
+**One-command build (pixi):**
+
+```bash
+pixi run submodules && pixi run configure && pixi run build   # -> build/basalt_vio
+```
+
 ## Installation
 
 - **Prebuilt (Ubuntu/Raspberry/Radxa)**: Download [latest .deb](https://gitlab.freedesktop.org/mateosss/basalt/-/releases) and install with
