@@ -78,6 +78,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <basalt/utils/format.hpp>
 #include <basalt/utils/time_utils.hpp>
 
+#ifdef BASALT_RERUN
+#include <unordered_map>
+
+#include <basalt/utils/rerun_export.h>
+#endif
+
 // enable the "..."_format(...) string literal
 using namespace basalt::literals;
 using namespace basalt;
@@ -179,9 +185,19 @@ struct basalt_vio_ui : vis::VIOUIBase {
   bool aborted = false;
   bool initially_aligned = false;
 
+  // Rerun (rerun.io) visualization backend (orthogonal to the Pangolin GUI).
+  bool enable_rerun = false;
+  std::string rerun_rrd_path;
+  std::string rerun_app_id = "basalt_vio";
+#ifdef BASALT_RERUN
+  std::unique_ptr<RerunExporter> rerun_exporter;
+  bool rerun_reproj_checked = false;  // one-shot 2D/3D reprojection-error validation
+#endif
+
   thread feed_images_thread;
   thread feed_imu_thread;
   thread vis_thread;
+  thread rerun_vis_thread;
   thread ui_thread;
   thread state_consumer_thread;
   thread queues_printer_thread;
@@ -245,6 +261,9 @@ struct basalt_vio_ui : vis::VIOUIBase {
     CLI::App app{"Basalt CLI"};
 
     app.add_option("--show-gui", show_gui, "Show GUI");
+    app.add_flag("--rerun", enable_rerun, "Log visualization to a rerun.io recording");
+    app.add_option("--rerun-rrd", rerun_rrd_path, "Save the rerun recording to this .rrd path (implies --rerun)");
+    app.add_option("--rerun-app-id", rerun_app_id, "Rerun application id (default: basalt_vio)");
     app.add_option("--cam-calib", cam_calib_path, "Ground-truth camera calibration used for simulation.")->required();
     app.add_option("--dataset-path", dataset_path, "Path to dataset.")->required();
     app.add_option("--dataset-type", dataset_type, "Dataset type <euroc, bag>.");
@@ -267,6 +286,10 @@ struct basalt_vio_ui : vis::VIOUIBase {
     try {
       app.parse(argc, argv);
     } catch (const CLI::ParseError& e) { return app.exit(e); }
+
+    // A given --rerun-rrd path implies --rerun; normalize once so the rest of
+    // the code only needs to check enable_rerun.
+    if (!rerun_rrd_path.empty()) enable_rerun = true;
 
     // global thread limit is in effect until global_control object is destroyed
     std::unique_ptr<tbb::global_control> tbb_global_control;
@@ -333,12 +356,56 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
       opt_flow->output_queue = &vio->vision_data_queue;
       opt_flow->show_gui = show_gui;
-      if (show_gui) vio->out_vis_queue = &out_vis_queue;
+      if (show_gui || enable_rerun) vio->out_vis_queue = &out_vis_queue;
       vio->out_state_queue = &out_state_queue;
       vio->opt_flow_depth_guess_queue = &opt_flow->input_depth_queue;
       vio->opt_flow_state_queue = &opt_flow->input_state_queue;
       vio->opt_flow_lm_bundle_queue = &opt_flow->input_lm_bundle_queue;
     }
+
+#ifdef BASALT_RERUN
+    if (enable_rerun) {
+      // save() takes precedence; spawn only when no .rrd path was given.
+      rerun_exporter = std::make_unique<RerunExporter>(rerun_app_id, rerun_rrd_path, /*spawn=*/true);
+      if (!rerun_exporter->good()) {
+        std::cerr << "[rerun] recording disabled (no sink attached)" << std::endl;
+        rerun_exporter.reset();
+      }
+    }
+    if (rerun_exporter) {
+      // Static camera rig (extrinsics + linear-pinhole intrinsics).
+      std::vector<CamCalib> cams;
+      for (size_t i = 0; i < calib.intrinsics.size(); i++) {
+        // Materialize into a concrete vector (do NOT keep the lazy cast<>()
+        // expression — it would dangle on getParam()'s temporary).
+        const Eigen::VectorXd intr = calib.intrinsics[i].getParam();
+        const Eigen::Vector2i res = calib.resolution[i];
+        cams.push_back(CamCalib{calib.T_i_c[i], static_cast<float>(intr[0]), static_cast<float>(intr[1]),
+                                static_cast<float>(intr[2]), static_cast<float>(intr[3]), res[0], res[1]});
+      }
+      rerun_exporter->log_static_calib(cams);
+
+      // Raw IMU stream (gyro + accel share timestamps; see feed_imu), logged
+      // once on the sensor_time timeline.
+      const auto& gyro_data = vio_dataset->get_gyro_data();
+      const auto& accel_data = vio_dataset->get_accel_data();
+      const size_t n_imu = std::min(gyro_data.size(), accel_data.size());
+      std::vector<int64_t> imu_t_ns;
+      std::vector<Eigen::Vector3d> imu_gyro, imu_accel;
+      imu_t_ns.reserve(n_imu);
+      imu_gyro.reserve(n_imu);
+      imu_accel.reserve(n_imu);
+      for (size_t i = 0; i < n_imu; i++) {
+        imu_t_ns.push_back(gyro_data[i].timestamp_ns);
+        imu_gyro.push_back(gyro_data[i].data);
+        imu_accel.push_back(accel_data[i].data);
+      }
+      rerun_exporter->log_imu(imu_t_ns, imu_gyro, imu_accel, start_t_ns);
+
+      // GT path is logged later, after alignSVD has transformed gt_t_w_i into
+      // the estimate's frame, so the two trajectories overlay (see stop()).
+    }
+#endif
 
     basalt::MargDataSaver::Ptr marg_data_saver;
 
@@ -386,6 +453,22 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
         std::cout << "Finished t3" << std::endl;
       });
+
+#ifdef BASALT_RERUN
+    // Dedicated rerun consumer of the visualization queue (keypoints + 3D
+    // landmarks). Only when the Pangolin vis_thread is NOT running, so the two
+    // never race for the same queue. Terminates on the estimator's nullptr.
+    if (rerun_exporter && !show_gui) {
+      rerun_vis_thread = thread([&]() {
+        basalt::VioVisualizationData::Ptr data;
+        while (true) {
+          out_vis_queue.pop(data);
+          if (!data) break;
+          rerun_log_vis(data);
+        }
+      });
+    }
+#endif
 
     if (!deterministic) {
       state_consumer_thread = thread([&]() {
@@ -472,6 +555,21 @@ struct basalt_vio_ui : vis::VIOUIBase {
     vio_t_w_i.emplace_back(pos_w_i);
     vio_T_w_i.emplace_back(T_w_i);
 
+#ifdef BASALT_RERUN
+    if (rerun_exporter) {
+      rerun_exporter->begin_frame(rerun_frame_index(t_ns), t_ns, start_t_ns);
+      rerun_exporter->log_pose(T_w_i);
+      rerun_exporter->log_metrics(vel_w_i, bg, ba);
+      if (data->input_images) {
+        const auto& img_data = data->input_images->img_data;
+        for (size_t cam = 0; cam < img_data.size(); cam++) {
+          const auto& img = img_data[cam].img;
+          if (img) rerun_exporter->log_image(int(cam), img->ptr, int(img->w), int(img->h), img->pitch);
+        }
+      }
+    }
+#endif
+
     if (show_gui) {
       double t_s = (t_ns - start_t_ns) * 1e-9;
       log_vel.ScaledLog(t_s, {vel_w_i[0], vel_w_i[1], vel_w_i[2]});
@@ -482,6 +580,113 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
     return true;
   }
+
+#ifdef BASALT_RERUN
+  // Canonical frame index for a timestamp (shared by the state- and vis-queue
+  // consumers so both stamp the same physical frame on the `frame` timeline).
+  int64_t rerun_frame_index(int64_t t_ns) {
+    const auto& ts = vio_dataset->get_image_timestamps();
+    return int64_t(std::lower_bound(ts.begin(), ts.end(), t_ns) - ts.begin());
+  }
+
+  // Sample 8-bit intensity from Basalt's (8bit<<8) uint16 image at pixel (u,v),
+  // packed as 0xRRGGBBAA grey. Out-of-bounds / null -> opaque white.
+  static uint32_t rerun_pixel_rgba(const basalt::ManagedImage<uint16_t>* img, float u, float v) {
+    const int x = int(std::lround(u)), y = int(std::lround(v));
+    if (img == nullptr || !img->InBounds(x, y)) return 0xffffffffu;
+    const uint32_t i8 = uint32_t((*img)(size_t(x), size_t(y)) >> 8);
+    return (i8 << 24) | (i8 << 16) | (i8 << 8) | 0xffu;
+  }
+
+  // Log 2D tracked keypoints (per camera) + the 3D landmark cloud from one
+  // visualization packet, coloring each point by the image pixel it sits on.
+  void rerun_log_vis(const basalt::VioVisualizationData::Ptr& data) {
+    if (!rerun_exporter || !data) return;
+    rerun_exporter->begin_frame(rerun_frame_index(data->t_ns), data->t_ns, start_t_ns);
+
+    const auto& ofr = data->opt_flow_res;
+    if (ofr) {
+      // 2D keypoints get a high-contrast color so they are visible ON the
+      // grayscale image (coloring them by the underlying pixel would make them
+      // blend in / vanish). The 3D landmark cloud below is image-colored.
+      constexpr uint32_t KP_COLOR = 0x39ff14ffu;  // neon green
+      for (size_t cam = 0; cam < ofr->keypoints.size(); cam++) {
+        std::vector<Eigen::Vector2f> uv;
+        std::vector<uint32_t> rgba;
+        uv.reserve(ofr->keypoints[cam].size());
+        rgba.reserve(ofr->keypoints[cam].size());
+        for (const auto& kv : ofr->keypoints[cam]) {
+          uv.push_back(kv.second.translation());
+          rgba.push_back(KP_COLOR);
+        }
+        rerun_exporter->log_keypoints(int(cam), uv, rgba);
+      }
+    }
+
+    // 2D reprojections of the 3D landmarks (Basalt's distorted projections),
+    // overlaid on the image — these should land on the green tracked keypoints.
+    if (data->projections) {
+      for (size_t cam = 0; cam < data->projections->size(); cam++) {
+        const auto& projs = (*data->projections)[cam];
+        std::vector<Eigen::Vector2f> obs_uv;
+        obs_uv.reserve(projs.size());
+        for (const auto& pr : projs) obs_uv.emplace_back(float(pr[0]), float(pr[1]));
+        rerun_exporter->log_observations(int(cam), obs_uv, 0xff00ffffu);  // magenta
+      }
+
+      // One-shot numerical validation: how far the reprojected 3D landmarks land
+      // from the tracked keypoints (matched by landmark id). Small => 2D and 3D
+      // are consistent.
+      if (!rerun_reproj_checked && ofr) {
+        rerun_reproj_checked = true;
+        for (size_t cam = 0; cam < data->projections->size() && cam < ofr->keypoints.size(); cam++) {
+          double sum = 0.0, mx = 0.0;
+          int n = 0;
+          for (const auto& pr : (*data->projections)[cam]) {
+            auto it = ofr->keypoints[cam].find(size_t(pr[3]));
+            if (it == ofr->keypoints[cam].end()) continue;
+            const Eigen::Vector2f kp = it->second.translation();
+            const double e = std::hypot(double(pr[0]) - kp.x(), double(pr[1]) - kp.y());
+            sum += e;
+            mx = std::max(mx, e);
+            n++;
+          }
+          if (n > 0)
+            std::cerr << "[rerun] cam" << cam << " reprojection error vs keypoints: mean=" << (sum / n)
+                      << "px max=" << mx << "px over " << n << " obs\n";
+        }
+      }
+    }
+
+    if (!data->points.empty()) {
+      // Map landmark id -> cam0 observation pixel, to color each 3D point.
+      std::unordered_map<int, Eigen::Vector2f> obs0;
+      if (data->projections && !data->projections->empty()) {
+        const auto& projs0 = (*data->projections)[0];
+        obs0.reserve(projs0.size());
+        for (const auto& pr : projs0) obs0[int(pr[3])] = Eigen::Vector2f(float(pr[0]), float(pr[1]));
+      }
+      const basalt::ManagedImage<uint16_t>* img0 =
+          (ofr && ofr->input_images && !ofr->input_images->img_data.empty())
+              ? ofr->input_images->img_data[0].img.get()
+              : nullptr;
+      std::vector<Eigen::Vector3f> pts;
+      std::vector<uint32_t> rgba;
+      pts.reserve(data->points.size());
+      rgba.reserve(data->points.size());
+      for (size_t i = 0; i < data->points.size(); i++) {
+        pts.push_back(data->points[i].cast<float>());
+        uint32_t c = 0xffffffffu;
+        if (i < data->point_ids.size()) {
+          auto it = obs0.find(data->point_ids[i]);
+          if (it != obs0.end()) c = rerun_pixel_rgba(img0, it->second.x(), it->second.y());
+        }
+        rgba.push_back(c);
+      }
+      rerun_exporter->log_landmarks(pts, rgba);
+    }
+  }
+#endif
 
   void print_queue_fn() {
     std::cout << "opt_flow->input_img_queue " << opt_flow->input_img_queue.size() << " opt_flow->output_queue "
@@ -739,8 +944,13 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
     // join other threads
     if (show_gui) vis_thread.join();
+    if (rerun_vis_thread.joinable()) rerun_vis_thread.join();
     if (!deterministic) state_consumer_thread.join();
     if (print_queue) queues_printer_thread.join();
+
+#ifdef BASALT_RERUN
+    if (rerun_exporter) rerun_exporter->flush();
+#endif
 
     // after joining all threads, print final queue sizes.
     if (print_queue) {
@@ -754,6 +964,17 @@ struct basalt_vio_ui : vis::VIOUIBase {
     // TODO: remove this unconditional call (here for debugging);
     const double ate_rmse = basalt::alignSVD(vio_t_ns, vio_t_w_i, gt_t_ns, gt_t_w_i);
     if (ate_rmse < 0) std::cout << "error: Trajectory could not be aligned with ground truth!" << std::endl;
+
+#ifdef BASALT_RERUN
+    // alignSVD transforms gt_t_w_i into the estimate's frame (the estimate is
+    // its const input), so logging the GT path now overlays it on the estimated
+    // trajectory at /world/runs/basalt/trajectory.
+    if (rerun_exporter && !gt_t_w_i.empty()) {
+      std::vector<Eigen::Vector3d> gt_pts(gt_t_w_i.begin(), gt_t_w_i.end());
+      rerun_exporter->log_gt_path(gt_pts);
+      rerun_exporter->flush();
+    }
+#endif
 
     vio->debug_finalize();
     std::cout << "Total runtime: {:.3f}s\n"_format(duration_total);
