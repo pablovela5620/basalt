@@ -287,6 +287,10 @@ struct basalt_vio_ui : vis::VIOUIBase {
       app.parse(argc, argv);
     } catch (const CLI::ParseError& e) { return app.exit(e); }
 
+    // A given --rerun-rrd path implies --rerun; normalize once so the rest of
+    // the code only needs to check enable_rerun.
+    if (!rerun_rrd_path.empty()) enable_rerun = true;
+
     // global thread limit is in effect until global_control object is destroyed
     std::unique_ptr<tbb::global_control> tbb_global_control;
     if (num_threads > 0) {
@@ -352,7 +356,7 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
       opt_flow->output_queue = &vio->vision_data_queue;
       opt_flow->show_gui = show_gui;
-      if (show_gui || enable_rerun || !rerun_rrd_path.empty()) vio->out_vis_queue = &out_vis_queue;
+      if (show_gui || enable_rerun) vio->out_vis_queue = &out_vis_queue;
       vio->out_state_queue = &out_state_queue;
       vio->opt_flow_depth_guess_queue = &opt_flow->input_depth_queue;
       vio->opt_flow_state_queue = &opt_flow->input_state_queue;
@@ -360,7 +364,6 @@ struct basalt_vio_ui : vis::VIOUIBase {
     }
 
 #ifdef BASALT_RERUN
-    if (!rerun_rrd_path.empty()) enable_rerun = true;
     if (enable_rerun) {
       // save() takes precedence; spawn only when no .rrd path was given.
       rerun_exporter = std::make_unique<RerunExporter>(rerun_app_id, rerun_rrd_path, /*spawn=*/true);
@@ -589,9 +592,8 @@ struct basalt_vio_ui : vis::VIOUIBase {
   // Sample 8-bit intensity from Basalt's (8bit<<8) uint16 image at pixel (u,v),
   // packed as 0xRRGGBBAA grey. Out-of-bounds / null -> opaque white.
   static uint32_t rerun_pixel_rgba(const basalt::ManagedImage<uint16_t>* img, float u, float v) {
-    if (img == nullptr) return 0xffffffffu;
-    const long x = std::lround(u), y = std::lround(v);
-    if (x < 0 || y < 0 || x >= long(img->w) || y >= long(img->h)) return 0xffffffffu;
+    const int x = int(std::lround(u)), y = int(std::lround(v));
+    if (img == nullptr || !img->InBounds(x, y)) return 0xffffffffu;
     const uint32_t i8 = uint32_t((*img)(size_t(x), size_t(y)) >> 8);
     return (i8 << 24) | (i8 << 16) | (i8 << 8) | 0xffu;
   }
@@ -604,15 +606,11 @@ struct basalt_vio_ui : vis::VIOUIBase {
 
     const auto& ofr = data->opt_flow_res;
     if (ofr) {
+      // 2D keypoints get a high-contrast color so they are visible ON the
+      // grayscale image (coloring them by the underlying pixel would make them
+      // blend in / vanish). The 3D landmark cloud below is image-colored.
+      constexpr uint32_t KP_COLOR = 0x39ff14ffu;  // neon green
       for (size_t cam = 0; cam < ofr->keypoints.size(); cam++) {
-        const basalt::ManagedImage<uint16_t>* img =
-            (ofr->input_images && cam < ofr->input_images->img_data.size())
-                ? ofr->input_images->img_data[cam].img.get()
-                : nullptr;
-        // 2D keypoints get a high-contrast color so they are visible ON the
-        // grayscale image (coloring them by the underlying pixel would make them
-        // blend in / vanish). The 3D landmark cloud below is image-colored.
-        constexpr uint32_t KP_COLOR = 0x39ff14ffu;  // neon green
         std::vector<Eigen::Vector2f> uv;
         std::vector<uint32_t> rgba;
         uv.reserve(ofr->keypoints[cam].size());
@@ -621,7 +619,6 @@ struct basalt_vio_ui : vis::VIOUIBase {
           uv.push_back(kv.second.translation());
           rgba.push_back(KP_COLOR);
         }
-        (void)img;
         rerun_exporter->log_keypoints(int(cam), uv, rgba);
       }
     }
@@ -665,7 +662,9 @@ struct basalt_vio_ui : vis::VIOUIBase {
       // Map landmark id -> cam0 observation pixel, to color each 3D point.
       std::unordered_map<int, Eigen::Vector2f> obs0;
       if (data->projections && !data->projections->empty()) {
-        for (const auto& pr : (*data->projections)[0]) obs0[int(pr[3])] = Eigen::Vector2f(float(pr[0]), float(pr[1]));
+        const auto& projs0 = (*data->projections)[0];
+        obs0.reserve(projs0.size());
+        for (const auto& pr : projs0) obs0[int(pr[3])] = Eigen::Vector2f(float(pr[0]), float(pr[1]));
       }
       const basalt::ManagedImage<uint16_t>* img0 =
           (ofr && ofr->input_images && !ofr->input_images->img_data.empty())

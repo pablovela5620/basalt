@@ -17,14 +17,58 @@ in `basalt_vio` talks to `basalt::RerunExporter` through the PIMPL declared in
 
 namespace basalt {
 
+namespace {
+
+// --- Canonical entity-path scheme (kept in one place to avoid drift; a typo
+// here would silently detach an entity from its Pinhole/Transform3D parent). ---
+constexpr const char* kWorld = "/world";
+constexpr const char* kRig = "/world/rig_0";
+constexpr const char* kEstTraj = "/world/runs/basalt/trajectory";
+constexpr const char* kGtPath = "/world/rig_0_path";
+constexpr const char* kGtEndpoints = "/world/rig_0_path/endpoints";
+constexpr const char* kLandmarks = "/world/landmarks";
+constexpr const char* kVelocity = "/world/metrics/velocity";
+constexpr const char* kImuGyro = "/world/rig_0/imu_0/gyro";
+constexpr const char* kImuAccel = "/world/rig_0/imu_0/accel";
+constexpr const char* kBiasGyro = "/world/rig_0/imu_0/bias_gyro";
+constexpr const char* kBiasAccel = "/world/rig_0/imu_0/bias_accel";
+
+std::string cam_base(int i) { return "/world/rig_0/cam_" + std::to_string(i); }
+std::string cam_pinhole(int i) { return cam_base(i) + "/pinhole"; }
+std::string cam_image(int i) { return cam_pinhole(i) + "/image"; }
+std::string cam_keypoints(int i) { return cam_pinhole(i) + "/keypoints"; }
+std::string cam_observations(int i) { return cam_pinhole(i) + "/observations"; }
+
+// --- Colors and point sizes ---
+const rerun::Color kEstColor(0xff, 0xa5, 0x00);  // estimated trajectory (amber)
+const rerun::Color kGtColor(0x3c, 0xb0, 0x43);   // ground-truth path (green)
+const rerun::Color kGtStart(0x2e, 0xcc, 0x40);   // GT start marker (green)
+const rerun::Color kGtEnd(0xff, 0x41, 0x36);     // GT end marker (red)
+constexpr float kLandmarkRadius = 0.02f;
+constexpr float kEndpointRadius = 0.02f;
+constexpr float kKeypointRadius = 3.0f;
+constexpr float kObsRadius = 2.0f;
+
+// Unpack a packed 0xRRGGBBAA color.
+rerun::Color color_rgba(uint32_t c) {
+  return rerun::Color(uint8_t(c >> 24), uint8_t(c >> 16), uint8_t(c >> 8), uint8_t(c));
+}
+
+// Sophus SE3 -> rerun Transform3D (translation + xyzw quaternion).
+rerun::Transform3D se3_to_transform3d(const Sophus::SE3d& T) {
+  const Eigen::Vector3d p = T.translation();
+  const Eigen::Quaterniond q = T.unit_quaternion();
+  return rerun::Transform3D()
+      .with_translation({float(p.x()), float(p.y()), float(p.z())})
+      .with_rotation(rerun::Quaternion::from_xyzw(float(q.x()), float(q.y()), float(q.z()), float(q.w())));
+}
+
+}  // namespace
+
 struct RerunExporter::Impl {
   std::unique_ptr<rerun::RecordingStream> rec;
   bool ok = false;
   std::vector<rerun::datatypes::Vec3D> traj;  // accumulated estimated positions (state thread only)
-
-  static rerun::Color color_rgba(uint32_t c) {
-    return rerun::Color(uint8_t(c >> 24), uint8_t(c >> 16), uint8_t(c >> 8), uint8_t(c));
-  }
 };
 
 RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_path, bool spawn)
@@ -49,29 +93,19 @@ RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_p
   impl_->ok = true;
 
   // World coordinate frame: right-handed, Z up — matches Basalt's world frame.
-  impl_->rec->log_static("/world", rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
+  impl_->rec->log_static(kWorld, rerun::ViewCoordinates::RIGHT_HAND_Z_UP);
 }
 
 void RerunExporter::log_static_calib(const std::vector<CamCalib>& cams) {
   if (!good()) return;
   for (size_t i = 0; i < cams.size(); ++i) {
     const CamCalib& c = cams[i];
-    const Eigen::Vector3d p = c.T_i_c.translation();
-    const Eigen::Quaterniond q = c.T_i_c.unit_quaternion();
-    const std::string base = "/world/rig_0/cam_" + std::to_string(i);
-
-    impl_->rec->log_static(
-        base,
-        rerun::Transform3D()
-            .with_translation({static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())})
-            .with_rotation(rerun::Quaternion::from_xyzw(
-                static_cast<float>(q.x()), static_cast<float>(q.y()), static_cast<float>(q.z()),
-                static_cast<float>(q.w()))));
+    impl_->rec->log_static(cam_base(int(i)), se3_to_transform3d(c.T_i_c));
 
     // Linear pinhole approximation (Basalt cameras are KB4/radtan8/...; principal
     // point is centered here — see the integration plan, Risk #5).
     impl_->rec->log_static(
-        base + "/pinhole",
+        cam_pinhole(int(i)),
         rerun::Pinhole::from_focal_length_and_resolution(
             {c.fx, c.fy}, {static_cast<float>(c.width), static_cast<float>(c.height)})
             .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
@@ -87,16 +121,13 @@ void RerunExporter::log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions
   for (const auto& g : gt_positions) {
     pts.push_back({static_cast<float>(g.x()), static_cast<float>(g.y()), static_cast<float>(g.z())});
   }
-  impl_->rec->log_static(
-      "/world/rig_0_path",
-      rerun::LineStrips3D(rerun::components::LineStrip3D(pts)).with_colors(rerun::Color(0x3c, 0xb0, 0x43)));
+  impl_->rec->log_static(kGtPath,
+                         rerun::LineStrips3D(rerun::components::LineStrip3D(pts)).with_colors(kGtColor));
 
   const std::vector<rerun::datatypes::Vec3D> ends = {pts.front(), pts.back()};
-  impl_->rec->log_static(
-      "/world/rig_0_path/endpoints",
-      rerun::Points3D(ends)
-          .with_colors({rerun::Color(0x2e, 0xcc, 0x40), rerun::Color(0xff, 0x41, 0x36)})  // start green / end red
-          .with_radii({0.02f, 0.02f}));
+  impl_->rec->log_static(kGtEndpoints, rerun::Points3D(ends)
+                                           .with_colors({kGtStart, kGtEnd})
+                                           .with_radii({kEndpointRadius, kEndpointRadius}));
 }
 
 void RerunExporter::log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
@@ -105,8 +136,8 @@ void RerunExporter::log_imu(const std::vector<int64_t>& t_ns, const std::vector<
   const size_t n = std::min(t_ns.size(), std::min(gyro.size(), accel.size()));
   for (size_t i = 0; i < n; ++i) {
     impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns[i] - start_t_ns) * 1e-9);
-    impl_->rec->log("/world/rig_0/imu_0/gyro", rerun::Scalars({gyro[i].x(), gyro[i].y(), gyro[i].z()}));
-    impl_->rec->log("/world/rig_0/imu_0/accel", rerun::Scalars({accel[i].x(), accel[i].y(), accel[i].z()}));
+    impl_->rec->log(kImuGyro, rerun::Scalars({gyro[i].x(), gyro[i].y(), gyro[i].z()}));
+    impl_->rec->log(kImuAccel, rerun::Scalars({accel[i].x(), accel[i].y(), accel[i].z()}));
   }
 }
 
@@ -118,26 +149,16 @@ void RerunExporter::begin_frame(int64_t frame_idx, int64_t t_ns, int64_t start_t
 
 void RerunExporter::log_pose(const Sophus::SE3d& T_w_i) {
   if (!good()) return;
-  const Eigen::Vector3d p = T_w_i.translation();
-  const Eigen::Quaterniond q = T_w_i.unit_quaternion();
 
   // Per-frame rig pose (world <- imu/body).
-  impl_->rec->log(
-      "/world/rig_0",
-      rerun::Transform3D()
-          .with_translation({static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())})
-          .with_rotation(rerun::Quaternion::from_xyzw(
-              static_cast<float>(q.x()), static_cast<float>(q.y()), static_cast<float>(q.z()),
-              static_cast<float>(q.w()))));
+  impl_->rec->log(kRig, se3_to_transform3d(T_w_i));
 
   // Growing estimated-trajectory polyline (logged in full each frame so that
   // scrubbing the `frame` timeline shows the path up to that frame).
-  impl_->traj.push_back(
-      {static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())});
-  impl_->rec->log(
-      "/world/runs/basalt/trajectory",
-      rerun::LineStrips3D(rerun::components::LineStrip3D(impl_->traj))
-          .with_colors(rerun::Color(0xff, 0xa5, 0x00)));
+  const Eigen::Vector3d p = T_w_i.translation();
+  impl_->traj.push_back({static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())});
+  impl_->rec->log(kEstTraj,
+                  rerun::LineStrips3D(rerun::components::LineStrip3D(impl_->traj)).with_colors(kEstColor));
 }
 
 void RerunExporter::log_image(int cam, const uint16_t* data, int width, int height, size_t pitch_bytes) {
@@ -148,18 +169,15 @@ void RerunExporter::log_image(int cam, const uint16_t* data, int width, int heig
   m16.convertTo(m8, CV_8UC1, 1.0 / 256.0);
   std::vector<uint8_t> jpg;
   if (!cv::imencode(".jpg", m8, jpg)) return;
-  const std::string path = "/world/rig_0/cam_" + std::to_string(cam) + "/pinhole/image";
-  impl_->rec->log(path, rerun::EncodedImage::from_bytes(jpg, rerun::components::MediaType::jpeg()));
+  impl_->rec->log(cam_image(cam), rerun::EncodedImage::from_bytes(jpg, rerun::components::MediaType::jpeg()));
 }
 
 void RerunExporter::log_metrics(const Eigen::Vector3d& vel, const Eigen::Vector3d& bias_gyro,
                                 const Eigen::Vector3d& bias_accel) {
   if (!good()) return;
-  impl_->rec->log("/world/metrics/velocity", rerun::Scalars({vel.x(), vel.y(), vel.z()}));
-  impl_->rec->log("/world/rig_0/imu_0/bias_gyro",
-                  rerun::Scalars({bias_gyro.x(), bias_gyro.y(), bias_gyro.z()}));
-  impl_->rec->log("/world/rig_0/imu_0/bias_accel",
-                  rerun::Scalars({bias_accel.x(), bias_accel.y(), bias_accel.z()}));
+  impl_->rec->log(kVelocity, rerun::Scalars({vel.x(), vel.y(), vel.z()}));
+  impl_->rec->log(kBiasGyro, rerun::Scalars({bias_gyro.x(), bias_gyro.y(), bias_gyro.z()}));
+  impl_->rec->log(kBiasAccel, rerun::Scalars({bias_accel.x(), bias_accel.y(), bias_accel.z()}));
 }
 
 void RerunExporter::log_keypoints(int cam, const std::vector<Eigen::Vector2f>& uv,
@@ -171,10 +189,9 @@ void RerunExporter::log_keypoints(int cam, const std::vector<Eigen::Vector2f>& u
   colors.reserve(uv.size());
   for (size_t i = 0; i < uv.size(); ++i) {
     pts.push_back({uv[i].x(), uv[i].y()});
-    colors.push_back(Impl::color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
+    colors.push_back(color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
   }
-  const std::string path = "/world/rig_0/cam_" + std::to_string(cam) + "/pinhole/keypoints";
-  impl_->rec->log(path, rerun::Points2D(pts).with_colors(colors).with_radii(3.0f));
+  impl_->rec->log(cam_keypoints(cam), rerun::Points2D(pts).with_colors(colors).with_radii(kKeypointRadius));
 }
 
 void RerunExporter::log_observations(int cam, const std::vector<Eigen::Vector2f>& uv, uint32_t rgba) {
@@ -182,8 +199,7 @@ void RerunExporter::log_observations(int cam, const std::vector<Eigen::Vector2f>
   std::vector<rerun::datatypes::Vec2D> pts;
   pts.reserve(uv.size());
   for (const auto& p : uv) pts.push_back({p.x(), p.y()});
-  const std::string path = "/world/rig_0/cam_" + std::to_string(cam) + "/pinhole/observations";
-  impl_->rec->log(path, rerun::Points2D(pts).with_colors(Impl::color_rgba(rgba)).with_radii(2.0f));
+  impl_->rec->log(cam_observations(cam), rerun::Points2D(pts).with_colors(color_rgba(rgba)).with_radii(kObsRadius));
 }
 
 void RerunExporter::log_landmarks(const std::vector<Eigen::Vector3f>& points,
@@ -195,13 +211,12 @@ void RerunExporter::log_landmarks(const std::vector<Eigen::Vector3f>& points,
   colors.reserve(points.size());
   for (size_t i = 0; i < points.size(); ++i) {
     pts.push_back({points[i].x(), points[i].y(), points[i].z()});
-    colors.push_back(Impl::color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
+    colors.push_back(color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
   }
   // World frame (NOT under the moving /world/rig_0 transform — these points are
   // already in world coordinates; parenting them to the rig would re-apply the
   // camera pose and make the cloud swim with the camera).
-  impl_->rec->log("/world/landmarks",
-                  rerun::Points3D(pts).with_colors(colors).with_radii(0.02f));
+  impl_->rec->log(kLandmarks, rerun::Points3D(pts).with_colors(colors).with_radii(kLandmarkRadius));
 }
 
 RerunExporter::~RerunExporter() { flush(); }
