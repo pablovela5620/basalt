@@ -325,8 +325,8 @@ message(STATUS "BASALT_ENABLE_ROSBAG2: ${BASALT_ENABLE_ROSBAG2}")
 
 # Rerun (rerun.io) visualization backend. The C++ SDK comes from conda-forge
 # (librerun-sdk); find_package resolves it from $CONDA_PREFIX (CMAKE_PREFIX_PATH
-# is set by the pixi `configure` task). Linked onto the basalt_vio executable
-# only (see below) — basalt_internal stays Rerun-free.
+# is set by the pixi `configure` task). Linked onto the targets that log Rerun
+# data (see below) — basalt_internal stays Rerun-free.
 option(BASALT_ENABLE_RERUN "Build Rerun visualization backend" ON)
 if(BASALT_ENABLE_RERUN)
   find_package(rerun_sdk REQUIRED)
@@ -498,6 +498,11 @@ target_include_directories(basalt PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_compile_definitions(basalt PRIVATE VIT_INTERFACE_IMPLEMENTATION)
 
 target_link_libraries(basalt basalt_internal)
+if(BASALT_ENABLE_RERUN)
+  target_sources(basalt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_export.cpp)
+  target_link_libraries(basalt rerun_sdk basalt::opencv)  # opencv for JPEG image encoding
+  target_compile_definitions(basalt PRIVATE BASALT_RERUN)
+endif()
 
 if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
 

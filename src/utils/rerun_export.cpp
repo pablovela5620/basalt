@@ -2,7 +2,7 @@
 Rerun (rerun.io) visualization backend — implementation.
 
 This is the ONLY translation unit that includes `<rerun.hpp>`; everything else
-in `basalt_vio` talks to `basalt::RerunExporter` through the PIMPL declared in
+talks to `basalt::RerunExporter` through the PIMPL declared in
 `basalt/utils/rerun_export.h`. Compiled only when `BASALT_RERUN` is defined.
 */
 #include "basalt/utils/rerun_export.h"
@@ -71,7 +71,8 @@ struct RerunExporter::Impl {
   std::vector<rerun::datatypes::Vec3D> traj;  // accumulated estimated positions (state thread only)
 };
 
-RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_path, bool spawn)
+RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_path, bool spawn,
+                             const std::string& connect_url)
     : impl_(std::make_unique<Impl>()) {
   const std::string id = app_id.empty() ? std::string("basalt_vio") : app_id;
   impl_->rec = std::make_unique<rerun::RecordingStream>(id);
@@ -81,6 +82,8 @@ RerunExporter::RerunExporter(const std::string& app_id, const std::string& rrd_p
     err = impl_->rec->save(rrd_path);
   } else if (spawn) {
     err = impl_->rec->spawn();
+  } else if (!connect_url.empty()) {
+    err = impl_->rec->connect_grpc(connect_url);
   } else {
     // No sink requested — leave the exporter "not good" so callers no-op.
     return;
@@ -135,10 +138,17 @@ void RerunExporter::log_imu(const std::vector<int64_t>& t_ns, const std::vector<
   if (!good()) return;
   const size_t n = std::min(t_ns.size(), std::min(gyro.size(), accel.size()));
   for (size_t i = 0; i < n; ++i) {
-    impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns[i] - start_t_ns) * 1e-9);
-    impl_->rec->log(kImuGyro, rerun::Scalars({gyro[i].x(), gyro[i].y(), gyro[i].z()}));
-    impl_->rec->log(kImuAccel, rerun::Scalars({accel[i].x(), accel[i].y(), accel[i].z()}));
+    log_imu_sample(t_ns[i], gyro[i], accel[i], start_t_ns);
   }
+}
+
+void RerunExporter::log_imu_sample(int64_t t_ns, const Eigen::Vector3d& gyro,
+                                   const Eigen::Vector3d& accel, int64_t start_t_ns) {
+  if (!good()) return;
+  impl_->rec->disable_timeline("frame");
+  impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns - start_t_ns) * 1e-9);
+  impl_->rec->log(kImuGyro, rerun::Scalars({gyro.x(), gyro.y(), gyro.z()}));
+  impl_->rec->log(kImuAccel, rerun::Scalars({accel.x(), accel.y(), accel.z()}));
 }
 
 void RerunExporter::begin_frame(int64_t frame_idx, int64_t t_ns, int64_t start_t_ns) {

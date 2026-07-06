@@ -2,9 +2,9 @@
 Rerun (rerun.io) visualization backend for the Basalt VIO runner.
 
 All use of the Rerun C++ SDK is confined to `rerun_export.cpp` via a PIMPL, so
-no other translation unit in `basalt_vio` needs to include `<rerun.hpp>`. This
-file is only compiled/linked into the `basalt_vio` executable, and only when the
-`BASALT_ENABLE_RERUN` CMake option is set (which defines `BASALT_RERUN`).
+no other translation unit needs to include `<rerun.hpp>`. This file is only
+compiled/linked when the `BASALT_ENABLE_RERUN` CMake option is set (which
+defines `BASALT_RERUN`).
 
 The exporter mirrors the data the Pangolin GUI draws onto a Rerun recording so a
 C++ run and a Mojo-port run of the same dataset can be loaded together in one
@@ -37,9 +37,11 @@ class RerunExporter {
  public:
   /// Create a recording for `app_id`. If `rrd_path` is non-empty the stream is
   /// saved to that file; otherwise, if `spawn` is true, a Rerun viewer is
-  /// spawned and the stream connects to it. On success the `/world` view
+  /// spawned and the stream connects to it; otherwise, if `connect_url` is
+  /// non-empty, the stream connects to that URL. On success the `/world` view
   /// coordinates (right-handed, Z up — Basalt's world frame) are logged static.
-  RerunExporter(const std::string& app_id, const std::string& rrd_path, bool spawn);
+  RerunExporter(const std::string& app_id, const std::string& rrd_path, bool spawn,
+                const std::string& connect_url = "");
   ~RerunExporter();
 
   RerunExporter(const RerunExporter&) = delete;
@@ -60,6 +62,11 @@ class RerunExporter {
   /// `sensor_time` timeline. `t_ns`, `gyro`, `accel` are parallel arrays.
   void log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
                const std::vector<Eigen::Vector3d>& accel, int64_t start_t_ns);
+
+  /// Log one live IMU sample on the `sensor_time` timeline. Intended for
+  /// streaming paths that do not have the full IMU sequence up front.
+  void log_imu_sample(int64_t t_ns, const Eigen::Vector3d& gyro, const Eigen::Vector3d& accel,
+                      int64_t start_t_ns);
 
   // --- per-frame logging (call begin_frame, then any log_* below). begin_frame
   // takes an explicit frame index (derived from t_ns) so the state-queue and
