@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WMR Headset → Monado → Basalt: Implementation Log</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --border: #e5e7eb;
+    --card: #f9fafb; --accent: #2563eb;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --todo: #6b7280;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --fg: #e5e7eb; --muted: #9ca3af; --border: #2d333b;
+      --card: #1a1f26; --accent: #60a5fa;
+      --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --todo: #9ca3af;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; max-width: 60rem; padding: 2rem 1.25rem 4rem;
+    font: 16px/1.6 system-ui, sans-serif; background: var(--bg); color: var(--fg);
+  }
+  h1 { font-size: 1.6rem; line-height: 1.25; }
+  h2 { font-size: 1.2rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: .35rem; }
+  h3 { font-size: 1rem; }
+  code, pre { font-family: ui-monospace, monospace; font-size: .875em; }
+  code { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: .1em .35em; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .75rem 1rem; overflow-x: auto; }
+  pre code { background: none; border: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .badge {
+    display: inline-block; font-size: .72rem; font-weight: 600; letter-spacing: .03em;
+    padding: .15em .6em; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap;
+  }
+  .done { color: var(--ok); } .active { color: var(--warn); } .blocked { color: var(--bad); } .todo { color: var(--todo); }
+  .meta { color: var(--muted); font-size: .875rem; }
+  .callout { border-left: 3px solid var(--warn); background: var(--card); padding: .75rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0; }
+  .callout.bad { border-left-color: var(--bad); }
+  .callout.ok { border-left-color: var(--ok); }
+</style>
+</head>
+<body>
+
+<h1>HP WMR Headset → Monado → Basalt VIO</h1>
+<p class="meta">Implementation log · started 2026-07-05 · machine <code>pablo-ubuntu</code> (RTX 3060, driver 595.71.05) ·
+basalt fork <code>pablovela5620/basalt@pixi</code></p>
+
+<h2>Goal</h2>
+<p>Inside-out 6DoF tracking for an HP Windows Mixed Reality headset on Linux:
+Monado (OpenXR runtime, pure-pixi build) loads this repo's Basalt as a runtime SLAM plugin via the
+<strong>VIT 2.0</strong> interface (<code>libbasalt.so</code>, dlopened through
+<code>VIT_SYSTEM_LIBRARY_PATH</code> — no build-time coupling), with live Rerun visualization of the
+tracking pipeline and an OpenXR client rendering to the headset.</p>
+
+<h2>Decisions (from planning interview)</h2>
+<table>
+  <tr><th>Decision</th><th>Choice</th></tr>
+  <tr><td>Scope</td><td>Full stack: 6DoF tracking + OpenXR client rendering to the headset display</td></tr>
+  <tr><td>Monado build</td><td><strong>Pure pixi, no fallback</strong> — conda-forge deps only, mirroring basalt's packaging</td></tr>
+  <tr><td>Monado repo</td><td>Clone of GitLab upstream at <code>~/0Dev/repos/monado</code>, <code>pixi</code> branch, mirrored to <code>github.com/pablovela5620/monado</code></td></tr>
+  <tr><td>Rerun scope</td><td>Live: extend <code>src/vit/vit_tracker.cpp</code> with env-gated rerun logging (reuse <code>rerun_export.cpp</code>)</td></tr>
+  <tr><td>Delegation</td><td>Bulk work (pixi packaging, rerun plumbing) → gpt-5.5 via codex CLI; architecture/debug/validation → Claude</td></tr>
+  <tr><td>Validation</td><td>Stationary-only this session (user unavailable for motion); movement + wear test deferred to runbook below</td></tr>
+</table>
+
+<h2>Architecture</h2>
+<pre><code>HP WMR headset ──USB (cameras+IMU)──▶ Monado wmr driver ─▶ t_vit ──dlopen──▶ libbasalt.so (VIT 2.0)
+      │                                                        │                    │
+      └──DisplayPort◀── Monado compositor ◀── OpenXR client    └── poses ──▶ 6DoF   └──▶ Rerun viewer (live)
+
+Plan-B validation path (headset-independent):
+MSD dataset (MOO09) ─▶ Monado euroc driver ─▶ t_vit ─▶ libbasalt.so ─▶ poses + Rerun</code></pre>
+
+<h2>Status</h2>
+<table>
+  <tr><th>#</th><th>Phase</th><th>Status</th><th>Notes</th></tr>
+  <tr><td>1</td><td>HTML tracker scaffold</td><td><span class="badge done">DONE</span></td><td>This file</td></tr>
+  <tr><td>2</td><td>Headset USB enumeration</td><td><span class="badge blocked">BLOCKED — hardware</span></td><td>See hardware findings; suspected power-delivery failure, needs physical check</td></tr>
+  <tr><td>3</td><td>Monado clone + pin + mirror</td><td><span class="badge active">IN PROGRESS</span></td><td>Cloned; HEAD <code>4b339a28b</code> speaks VIT 2.0 (exact match with basalt's <code>thirdparty/vit</code>)</td></tr>
+  <tr><td>4</td><td>Monado pixi packaging (codex)</td><td><span class="badge active">IN PROGRESS</span></td><td>gpt-5.5 building <code>monado-service</code> from conda-forge deps</td></tr>
+  <tr><td>5</td><td>VIT tracker rerun logging (codex)</td><td><span class="badge active">IN PROGRESS</span></td><td>Env-gated live rerun in <code>vit_tracker.cpp</code> + <code>libbasalt.so</code> build</td></tr>
+  <tr><td>6</td><td>udev rules</td><td><span class="badge todo">TODO</span></td><td>Needs one sudo command from user</td></tr>
+  <tr><td>7</td><td>Monado→Basalt VIT wiring</td><td><span class="badge todo">TODO</span></td><td><code>VIT_SYSTEM_LIBRARY_PATH</code> + <code>data/vit/*.toml</code></td></tr>
+  <tr><td>8</td><td>OpenXR test client</td><td><span class="badge todo">TODO</span></td><td>hello_xr via pixi</td></tr>
+  <tr><td>9</td><td>Rerun validation (stationary)</td><td><span class="badge todo">TODO</span></td><td>MSD MOO09 replay through monado euroc driver → VIT → rerun; headless screenshots via rerun-viewer-validation</td></tr>
+  <tr><td>10</td><td>Motion + display validation</td><td><span class="badge todo">DEFERRED</span></td><td>Runbook below; requires user at the machine</td></tr>
+  <tr><td>11</td><td>Docs + commits + mirrors</td><td><span class="badge todo">TODO</span></td><td>WMR.md is stale (references removed <code>data/monado/</code>)</td></tr>
+</table>
+
+<h2>Hardware findings (2026-07-05)</h2>
+<div class="callout bad">
+<strong>Headset core is unpowered.</strong> Evidence, despite "fully plugged in (USB + DP + power)":
+<ul>
+  <li>Only the Cypress USB3 hub enumerates (<code>04b4:6504</code>, "HP Inc. HP Windows Mixed Reality", bus 2-7) — powered from USB bus voltage.</li>
+  <li>No <code>045e:0659</code> Microsoft HoloLens Sensors device (the cameras + IMU Monado needs).</li>
+  <li>Both downstream hub ports report <code>not attached</code>; hub is runtime-suspended.</li>
+  <li>The hub's USB2 companion device is absent from the 480M bus entirely.</li>
+  <li>All four GPU connectors (<code>card1-DP-1/2/3</code>, <code>HDMI-A-1</code>) report <code>disconnected</code> — no DP hotplug from the headset.</li>
+</ul>
+Interpretation: the hub chip is alive on USB power, but the internal rail feeding sensors, display and DP link is dead.
+Most likely: power brick unplugged / not delivering, loose barrel connector on the Y-cable, or a failing breakaway connection.
+</div>
+
+<h3>Physical checklist (user, when at the machine)</h3>
+<ol>
+  <li>Verify the headset's power adapter is in a live outlet and the barrel/breakaway connector on the Y-cable is fully seated.</li>
+  <li>Unplug USB + power, wait 10 s, reconnect power first, then USB (headset-side connector too, if detachable).</li>
+  <li>Confirm with <code>lsusb -d 045e:0659</code> — the HoloLens Sensors device must appear.</li>
+  <li>If still absent: try a different USB controller (the machine has several) and check the DP cable seats at the GPU.</li>
+</ol>
+
+<h2>Key technical facts</h2>
+<ul>
+  <li>Basalt implements <strong>VIT 2.0</strong> (<code>thirdparty/vit/vit_interface.h</code>); target <code>basalt</code> builds <code>libbasalt.so</code> including <code>src/vit/vit_tracker.cpp</code>.</li>
+  <li>Monado pinned at <code>4b339a28b</code> — its <code>src/external/vit_includes/vit/vit_interface.h</code> is also 2.0.</li>
+  <li>Monado's euroc driver (<code>drv_euroc</code>) replays EuRoC-layout datasets through the full runtime — the headset-independent validation path.</li>
+  <li>Basalt ships VIT configs at <code>data/vit/</code>: <code>msdmo.toml</code> matches Monado SLAM Dataset / Odyssey+ (MOO sequences).</li>
+  <li>Repo doc <code>doc/monado/WMR.md</code> is stale: references <code>$bsltdeps</code> and <code>data/monado/</code>, superseded by the VIT-era layout.</li>
+</ul>
+
+<h2>Validation evidence</h2>
+<p class="meta">To be filled by /rerun-viewer-validation: headless viewer screenshots of camera frames, tracked features and pose trajectory; saved .rrd path; blueprint used.</p>
+
+<h2>Runbook: deferred motion + display test</h2>
+<ol>
+  <li>Fix headset power (checklist above); confirm <code>lsusb -d 045e:0659</code>.</li>
+  <li>Install udev rules (phase 6), then start <code>monado-service</code> with the env block documented in phase 7.</li>
+  <li>Watch the live Rerun stream; pick the headset up and translate/rotate it — trajectory in rerun must follow motion, no drift explosions.</li>
+  <li>Run hello_xr; put the headset on — rendered scene must be stable in space as your head moves (NVIDIA direct-mode/DRM-lease is the known risk).</li>
+</ol>
+
+</body>
+</html>
