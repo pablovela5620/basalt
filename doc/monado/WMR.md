@@ -1,99 +1,84 @@
 # Windows Mixed Reality Headsets
 
-Monado should work out of the box with WMR devices and Basalt without any input
-on your part. So if you successfully followed the guide in the main README and
-Monado detects your WMR headset, then tracking should already be working for you.
+Monado works out of the box with WMR devices and this Basalt: the WMR driver
+reads the factory calibration from the headset and hands it to Basalt through
+the VIT interface, so no config file is needed for a first run.
 
-If it does not work, double check that you read everything in the guide, from
-top to bottom.
+This fork builds everything with [pixi](https://pixi.prefix.dev). The overall
+setup (see also `implementation-log.html` in this directory for a worked,
+validated log on real hardware paths):
 
-If it still doesn't work, triple check it.
-
-Now if you are still experiencing issues, crashes or would like to debug the
-pipeline for whatever reason, the rest of this document should help you with
-that.
-
-## Making a custom Basalt config file
-
-It's a good idea to make a Basalt config file for your headset so that you can
-easily tweak it if needed. Let's say we are trying to make a config file for a
-Reverb G2.
-
-First, let's get your WMR device json config block. To get that json, set the
-environment variable `WMR_LOG=debug` and run Monado with your WMR headset connected.
-The headset json is printed on start after the line `DEBUG [wmr_read_config] JSON config:`.
-Copy that to a file called `reverbg2_wmrcalib.json`.
-
-Now let's convert this WMR json to a Basalt calibration file with:
+1. Build `libbasalt.so` here: `pixi run submodules && pixi run configure &&
+   pixi run build-all` (the `basalt` target implements VIT 2.0,
+   `thirdparty/vit/vit_interface.h`).
+2. Build Monado (pixi-packaged mirror: `github.com/pablovela5620/monado`,
+   branch `pixi`): `pixi run configure-then-build`.
+3. Install udev rules so the headset is accessible without root (see the
+   runbook in `implementation-log.html`).
+4. Run:
 
 ```bash
-$bsltdeps/basalt/data/monado/wmr-tools/wmr2bslt_calib.py reverbg2_wmrcalib.json > $bsltdeps/basalt/data/reverbg2_calib.json
+cd ~/0Dev/repos/monado
+VIT_SYSTEM_LIBRARY_PATH=$HOME/0Dev/repos/basalt/build/libbasalt.so \
+pixi run ./build/src/xrt/targets/service/monado-service
 ```
 
-Finally, we'll need to create the main config file for Basalt that references
-this calibration file we just created. For that let's copy the config that is
-already present for the Odyssey+:
+Monado dlopens `libbasalt.so` at runtime — there is no build-time coupling
+between the two projects.
+
+## Useful environment variables
+
+- `VIT_SYSTEM_LIBRARY_PATH`: absolute path to `libbasalt.so`.
+- `SLAM_CONFIG`: path to a Basalt tracker `toml` (see `data/vit/*.toml.in`).
+  Without it, sensor calibration comes from the WMR device's factory JSON.
+- `SLAM_SUBMIT_FROM_START=true|false`: feed frames to Basalt immediately, or
+  wait for the "Submit data to SLAM" checkbox in the debug GUI.
+- `XRT_DEBUG_GUI=on`: Monado's own debug GUI (needs a display).
+- `WMR_AUTOEXPOSURE=off` + the "WMR Camera" GUI box: manual exposure/gain.
+- `WMR_LOG=debug`: prints the headset's JSON config block on start
+  (`DEBUG [wmr_read_config] JSON config:`) if you want to inspect or convert
+  the factory calibration.
+
+## Live Rerun visualization
+
+The VIT path can stream to [Rerun](https://rerun.io) (viewer 0.33):
+
+- `BASALT_VIT_RERUN=spawn` — spawn a local viewer;
+  `=<url>` — connect to a running viewer (`rerun+http://…/proxy`);
+  `=<path>.rrd` — record to a file. Unset = disabled, zero overhead.
+- `BASALT_VIT_RERUN_IMG_STRIDE=N` — log every Nth stereo frame (default 1).
+- `BASALT_VIT_RERUN_IMU=1` — also log gyro/accel/bias streams.
+
+Logged: stereo frames with tracked-feature overlays, camera calibration
+(frusta), 6DoF pose + trajectory, velocity and IMU bias plots.
+
+## Headset-independent smoke test
+
+You can validate the whole Monado→Basalt pipeline without a headset using a
+[Monado SLAM Dataset](https://huggingface.co/datasets/collabora/monado-slam-datasets)
+sequence and the euroc driver:
 
 ```bash
-cp $bsltdeps/basalt/data/monado/odysseyplus_rt8.toml $bsltdeps/basalt/data/monado/reverbg2.toml
+# batch (headless; keep stdin open — slambatch exits on stdin EOF)
+sleep 300 | VIT_SYSTEM_LIBRARY_PATH=…/libbasalt.so \
+  ./build/src/xrt/targets/cli/monado-cli slambatch \
+  <sequence_dir> <tracker.toml> <output_dir>
+
+# or as a live SLAM-tracked HMD with the null compositor
+XRT_COMPOSITOR_NULL=1 EUROC_HMD=true EUROC_PATH=<sequence_dir> \
+VIT_SYSTEM_LIBRARY_PATH=…/libbasalt.so SLAM_CONFIG=<tracker.toml> \
+SLAM_SUBMIT_FROM_START=true ./build/src/xrt/targets/service/monado-service
 ```
 
-And edit the `cam-calib` field in the `reverbg2.toml` file to point to your
-`reverbg2_calib.json` file.
+For MSD Odyssey+ (MOO) sequences use a `toml` pointing at
+`data/msd/msdmo_calib.json` + `data/msd/msdmo_config.json` (see
+`data/vit/msdmo.toml.in`; use absolute paths and `show-gui=0` when headless).
 
-That's it! now you have a Basalt config file that you can use for your headset.
+## Recalibrating my device
 
-## Set Monado options
-
-Let's set a couple environment variables in Monado that will help us debug the
-SLAM pipeline.
-
-- `SLAM_CONFIG=$bsltdeps/basalt/data/monado/reverbg2.toml`: Tell Monado where
-  the Basalt `toml` config you just created is. Notice that the `show-gui`
-  property is enabled in this `toml` file so you will start seeing the Basalt
-  visualizer when opening Monado. Furthermore the `config-path` key points to a
-  Basalt specific config file for tweaking the VIO pipeline.
-
-- `XRT_DEBUG_GUI=on`: Enable Monado's own debug GUI.
-
-- `SLAM_SUBMIT_FROM_START=off`: Do not send frames to Basalt from the start,
-  rather wait until we check the checkbox in the Monado GUI box called "SLAM
-  Tracker".
-
-- `WMR_AUTOEXPOSURE=off`: Disable autoexposure to have one less moving part, we
-  will manually adjust it instead on the "WMR Camera" box, by moving the
-  "Brightness" slider on the "Auto exposure and gain control" section.
-
-## Controling auto exposure
-
-By default, the UI box `SLAM Tracker` has the option `Submit data to SLAM`
-disabled so that you first manually configure the exposure and gain values in
-the `WMR Camera` box. You can enable it yourself in the UI or enable it at start
-by setting the environment variable `SLAM_SUBMIT_FROM_START=true`.
-
-## Recalibrating my device (TODO)
-
-It's not a bad idea to recalibrate your headset manually with the tools Basalt provides.
-
-TODO: Specify better the steps, but roughly they would be:
-
-1. Get calibration target from Kalibr: https://github.com/ethz-asl/kalibr/wiki/downloads
-2. Open the pdf in a flat monitor, measure dimensions with a ruler and put them on aprilgrid_6x6.json
-3. Record an EuRoC dataset from Monado in which you move the headset around the target (link an example sequence)
-4. Run
-   [basalt_calibrate](https://gitlab.com/VladyslavUsenko/basalt/-/blob/master/doc/Calibration.md#camera-calibration)
-   on
-   [euroc](https://gitlab.com/VladyslavUsenko/basalt/-/blob/master/doc/Calibration.md#euroc-dataset).
-5. Run
-   [basalt_calibrate_vio](https://gitlab.com/VladyslavUsenko/basalt/-/blob/master/doc/Calibration.md#camera-imu-mocap-calibration)
-   on
-   [euroc](https://gitlab.com/VladyslavUsenko/basalt/-/blob/master/doc/Calibration.md#camera-imu-calibration).
-
-# Video Walkthrough (DEPRECATED)
-
-_This video is not up to date anymore but might be useful to see how things
-worked before. Now, `view_offset` is automatically computed, exposure and gain
-are automatically set too, so in general there is no manual input needed from
-the user._
-
-~~Here is a 15 minute walkthrough with some tips for using a WMR headset with Monado and Basalt that should help complement the guide found in the [README.md](README.md) file: <https://www.youtube.com/watch?v=jyQKjyRVMS4>~~
+Roughly: print a Kalibr aprilgrid target, record a EuRoC-style dataset from
+Monado moving the headset around the target, then run
+[basalt_calibrate](https://gitlab.com/VladyslavUsenko/basalt/-/blob/master/doc/Calibration.md#camera-calibration)
+and
+[basalt_calibrate_vio](https://gitlab.com/VladyslavUsenko/basalt/-/blob/master/doc/Calibration.md#camera-imu-mocap-calibration)
+on it.

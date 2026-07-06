@@ -80,13 +80,13 @@ MSD dataset (MOO09) ─▶ Monado euroc driver ─▶ t_vit ─▶ libbasalt.so 
   <tr><th>#</th><th>Phase</th><th>Status</th><th>Notes</th></tr>
   <tr><td>1</td><td>HTML tracker scaffold</td><td><span class="badge done">DONE</span></td><td>This file</td></tr>
   <tr><td>2</td><td>Headset USB enumeration</td><td><span class="badge blocked">BLOCKED — hardware</span></td><td>See hardware findings; suspected power-delivery failure, needs physical check</td></tr>
-  <tr><td>3</td><td>Monado clone + pin + mirror</td><td><span class="badge active">IN PROGRESS</span></td><td>Cloned; HEAD <code>4b339a28b</code> speaks VIT 2.0 (exact match with basalt's <code>thirdparty/vit</code>)</td></tr>
-  <tr><td>4</td><td>Monado pixi packaging (codex)</td><td><span class="badge active">IN PROGRESS</span></td><td>gpt-5.5 building <code>monado-service</code> from conda-forge deps</td></tr>
-  <tr><td>5</td><td>VIT tracker rerun logging (codex)</td><td><span class="badge active">IN PROGRESS</span></td><td>Env-gated live rerun in <code>vit_tracker.cpp</code> + <code>libbasalt.so</code> build</td></tr>
-  <tr><td>6</td><td>udev rules</td><td><span class="badge todo">TODO</span></td><td>Needs one sudo command from user</td></tr>
-  <tr><td>7</td><td>Monado→Basalt VIT wiring</td><td><span class="badge todo">TODO</span></td><td><code>VIT_SYSTEM_LIBRARY_PATH</code> + <code>data/vit/*.toml</code></td></tr>
-  <tr><td>8</td><td>OpenXR test client</td><td><span class="badge todo">TODO</span></td><td>hello_xr via pixi</td></tr>
-  <tr><td>9</td><td>Rerun validation (stationary)</td><td><span class="badge todo">TODO</span></td><td>MSD MOO09 replay through monado euroc driver → VIT → rerun; headless screenshots via rerun-viewer-validation</td></tr>
+  <tr><td>3</td><td>Monado clone + pin + mirror</td><td><span class="badge done">DONE</span></td><td>Pinned <code>4b339a28b</code> (VIT 2.0, matches basalt); mirrored to <code>github.com/pablovela5620/monado</code> (private — flip public yourself if wanted; auto-mode denied agent-chosen public visibility)</td></tr>
+  <tr><td>4</td><td>Monado pixi packaging (codex)</td><td><span class="badge done">DONE</span></td><td>Pure conda-forge build; WMR/EUROC/QWERTY/SLAM/Vulkan-compositor ON; one patch (<code>gettid</code>→<code>syscall</code> for conda sysroot); binaries smoke-tested; committed <code>bb89401d6</code> on <code>pixi</code>, pushed to mirror</td></tr>
+  <tr><td>5</td><td>VIT tracker rerun logging (codex)</td><td><span class="badge done">DONE</span></td><td>Committed <code>2a82024</code>; env-gated <code>BASALT_VIT_RERUN=spawn|&lt;url&gt;|&lt;path&gt;.rrd</code>, <code>_IMG_STRIDE</code>, <code>_IMU</code></td></tr>
+  <tr><td>6</td><td>udev rules</td><td><span class="badge todo">TODO</span></td><td>One sudo command, see runbook step 2</td></tr>
+  <tr><td>7</td><td>Monado→Basalt VIT wiring</td><td><span class="badge done">DONE</span></td><td><code>VIT_SYSTEM_LIBRARY_PATH=…/basalt/build/libbasalt.so</code> + <code>SLAM_CONFIG=&lt;toml&gt;</code>; verified via slambatch and live service</td></tr>
+  <tr><td>8</td><td>OpenXR test client</td><td><span class="badge done">DONE</span></td><td>hello_xr pixi-built at <code>~/0Dev/repos/openxr-sdk-source</code> (one CMake patch to build hello_xr without full test suite)</td></tr>
+  <tr><td>9</td><td>Rerun validation (stationary)</td><td><span class="badge done">DONE</span></td><td>See evidence below — full pipeline validated headlessly, incl. an OpenXR client session</td></tr>
   <tr><td>10</td><td>Motion + display validation</td><td><span class="badge todo">DEFERRED</span></td><td>Runbook below; requires user at the machine</td></tr>
   <tr><td>11</td><td>Docs + commits + mirrors</td><td><span class="badge todo">TODO</span></td><td>WMR.md is stale (references removed <code>data/monado/</code>)</td></tr>
 </table>
@@ -122,15 +122,54 @@ Most likely: power brick unplugged / not delivering, loose barrel connector on t
   <li>Repo doc <code>doc/monado/WMR.md</code> is stale: references <code>$bsltdeps</code> and <code>data/monado/</code>, superseded by the VIT-era layout.</li>
 </ul>
 
-<h2>Validation evidence</h2>
-<p class="meta">To be filled by /rerun-viewer-validation: headless viewer screenshots of camera frames, tracked features and pose trajectory; saved .rrd path; blueprint used.</p>
+<h2>Validation evidence (2026-07-05, stationary/headless)</h2>
 
-<h2>Runbook: deferred motion + display test</h2>
+<h3>1. Dataset replay through the real Monado→Basalt stack</h3>
+<pre><code>VIT_SYSTEM_LIBRARY_PATH=…/basalt/build/libbasalt.so \
+BASALT_VIT_RERUN=moo09_vit.rrd BASALT_VIT_RERUN_IMU=1 BASALT_VIT_RERUN_IMG_STRIDE=4 \
+monado-cli slambatch datasets/MOO09_short_1_updown &lt;config.toml&gt; &lt;outdir&gt;</code></pre>
+<ul>
+  <li>147/147 frames + 4944/4944 IMU samples consumed; VIO initialized gravity-aligned.</li>
+  <li><code>tracking.csv</code>: 147 poses; z-range 0 → 0.742 m with x/y within cm — correct for an "updown" sequence.</li>
+  <li>Live-logged .rrd (7.3 MB) passes <code>rerun rrd verify</code>; contents: poses/trajectory (147), stereo images + keypoints (37 each — stride 4), gyro/accel (4944 each), velocity + biases (147), timelines <code>frame</code> 0..146 / <code>sensor_time</code> 0..4.92 s.</li>
+  <li>Beware: <code>slambatch</code> quits on stdin EOF (<code>getchar()</code> exit thread) — keep stdin open, don't <code>&lt; /dev/null</code>.</li>
+</ul>
+<p>Native headless viewer screenshot (Rerun 0.33.1, <code>ViewerClient.spawn(headless=True)</code>):
+3D trajectory rising vertically with stereo frusta, green feature overlays on the WMR fisheye frames,
+velocity/IMU/bias plots. Full report: <code>/tmp/rerun-viewer-validation/20260705-moo09/</code>.</p>
+<p><img src="img/moo09-rerun-validation.jpg" alt="Rerun headless validation of MOO09 through Monado VIT" style="max-width:100%; border-radius:8px;"></p>
+
+<h3>2. Headless OpenXR client against the live service</h3>
+<pre><code># service (null compositor, euroc device as SLAM-tracked HMD)
+XRT_COMPOSITOR_NULL=1 EUROC_HMD=true EUROC_PATH=&lt;dataset&gt; \
+VIT_SYSTEM_LIBRARY_PATH=…/libbasalt.so SLAM_CONFIG=&lt;toml&gt; SLAM_SUBMIT_FROM_START=true \
+monado-service
+# client
+XR_RUNTIME_JSON=…/monado/build/openxr_monado-dev.json hello_xr -g Vulkan</code></pre>
+<ul>
+  <li>hello_xr: instance created (RuntimeName=Monado(XRT)), system = <strong>Euroc HMD</strong>, Vulkan swapchains for both views, session IDLE→READY→SYNCHRONIZED→VISIBLE→<strong>FOCUSED</strong>, rendered until shutdown; service log error-free with Basalt VIT filter active.</li>
+  <li>Version note: client lib and service must be from the same build, else set <code>IPC_IGNORE_VERSION=1</code> (git-describe check).</li>
+</ul>
+<p>Together these validate every layer except the WMR USB device itself (hardware power blocker) and the physical display path (NVIDIA direct mode).</p>
+
+<h2>Runbook: deferred motion + display test (with the headset powered)</h2>
 <ol>
-  <li>Fix headset power (checklist above); confirm <code>lsusb -d 045e:0659</code>.</li>
-  <li>Install udev rules (phase 6), then start <code>monado-service</code> with the env block documented in phase 7.</li>
-  <li>Watch the live Rerun stream; pick the headset up and translate/rotate it — trajectory in rerun must follow motion, no drift explosions.</li>
-  <li>Run hello_xr; put the headset on — rendered scene must be stable in space as your head moves (NVIDIA direct-mode/DRM-lease is the known risk).</li>
+  <li>Fix headset power (checklist above); confirm with <code>lsusb -d 045e:0659</code>.</li>
+  <li>Install udev rules (once):
+<pre><code>sudo cp &lt;rules&gt; /etc/udev/rules.d/70-wmr-headset.rules   # content below
+sudo udevadm control --reload && sudo udevadm trigger</code></pre>
+<pre><code>SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0659", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0659", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03f0", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="03f0", TAG+="uaccess"</code></pre></li>
+  <li>Start the runtime (WMR auto-detected; drop the euroc/null-compositor test vars):
+<pre><code>cd ~/0Dev/repos/monado
+VIT_SYSTEM_LIBRARY_PATH=$HOME/0Dev/repos/basalt/build/libbasalt.so \
+BASALT_VIT_RERUN=spawn XRT_DEBUG_GUI=on \
+pixi run ./build/src/xrt/targets/service/monado-service</code></pre>
+      (Without <code>SLAM_CONFIG</code>, Monado extracts calibration from the WMR device's factory JSON.)</li>
+  <li>Watch the live Rerun stream; pick the headset up and translate/rotate it — the trajectory must follow motion without drift explosions.</li>
+  <li>Run hello_xr (<code>XR_RUNTIME_JSON=$HOME/0Dev/repos/monado/build/openxr_monado-dev.json … hello_xr -g Vulkan</code>); put the headset on — the scene must be stable in space as your head moves. NVIDIA direct-mode/DRM-lease to the headset DP output is the known risk on this box (RTX 3060, driver 595).</li>
 </ol>
 
 </body>

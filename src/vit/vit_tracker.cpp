@@ -205,6 +205,7 @@ struct Tracker::Implementation {
   bool rerun_spawn = false;
   bool rerun_log_imu = false;
   string rerun_connect_url;
+  string rerun_rrd_path;
   int rerun_img_stride = 1;
   int64_t rerun_start_t_ns = -1;
   int64_t rerun_next_frame_idx = 0;
@@ -329,6 +330,8 @@ struct Tracker::Implementation {
     const string sink_value(sink);
     if (sink_value == "spawn") {
       rerun_spawn = true;
+    } else if (sink_value.size() > 4 && sink_value.compare(sink_value.size() - 4, 4, ".rrd") == 0) {
+      rerun_rrd_path = sink_value;
     } else {
       rerun_connect_url = sink_value;
     }
@@ -340,7 +343,7 @@ struct Tracker::Implementation {
   void start_rerun() {
     if (!rerun_enabled || rerun_exporter) return;
 
-    rerun_exporter = std::make_unique<RerunExporter>("basalt_vit", "", rerun_spawn, rerun_connect_url);
+    rerun_exporter = std::make_unique<RerunExporter>("basalt_vit", rerun_rrd_path, rerun_spawn, rerun_connect_url);
     if (!rerun_exporter->good()) {
       std::cerr << "[rerun] VIT recording disabled (no sink attached)" << std::endl;
       rerun_exporter.reset();
