@@ -35,11 +35,36 @@ adapters own configuration, timelines, conversion, and logging. Upstream files
 retain only small `#ifdef BASALT_RERUN` lifecycle hooks. Building with
 `-DBASALT_ENABLE_RERUN=OFF` removes those hooks and the Rerun CLI options.
 
-**One-command build (pixi):**
+### Pixi quickstart
+
+Install [Pixi](https://pixi.sh/latest/installation/) first. On macOS, also
+install the Xcode Command Line Tools with `xcode-select --install`.
+
+From a new terminal:
 
 ```bash
-pixi run submodules && pixi run configure && pixi run build   # -> build/basalt_vio
+git clone --branch pixi https://github.com/pablovela5620/basalt.git
+cd basalt
+pixi install
+pixi run submodules
+pixi run configure
+pixi run build                 # creates build/basalt_vio
 ```
+
+Pixi supplies the compiler, CMake, native libraries, Python tools, FFmpeg, and
+Rerun. Commands run through `pixi run`, so no environment activation is needed.
+For later rebuilds, run `pixi run configure-then-build` from the repository.
+
+Run the downloadable four-camera Monado example and open it in Rerun:
+
+```bash
+pixi run mgo09-rerun           # downloads, builds, and records the example
+pixi run mgo09-view
+```
+
+Run `pixi task list` to see every available workflow. For native RoboCap data,
+follow the [RoboCap offline input guide](doc/RoboCap.md); it includes calibration,
+four-camera VIO, Rerun recording, and adapter test commands.
 
 ## Installation
 
