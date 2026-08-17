@@ -27,6 +27,8 @@ cmake = ">=3.24,<4"  # project targets CMake 3.x; CMake 4.x rejects opengv/Pango
 ninja = "*"
 pkg-config = "*"
 git = "*"
+huggingface_hub = ">=1.22,<2"  # `hf` CLI for the public Monado SLAM datasets
+unzip = "*"
 
 # --- core libraries required by find_package() (cross-platform) ---
 tbb-devel = "*"     # find_package(TBB): headers + libs (oneTBB)
@@ -48,7 +50,8 @@ epoxy = "*"
 # discoverable hermetically (no reliance on a system Eigen3); Basalt still uses the bundled
 # copy via EIGEN_ROOT. Without this, configure only worked where a system Eigen3 happened to exist.
 eigen = "5.0.1.*"
-librerun-sdk = "0.33.*"
+librerun-sdk = "0.36.*"
+rerun-sdk = "0.36.*"
 
 [target.linux-64.dependencies]
 # Linux-only: faster linker + the X11/Wayland/Mesa GL stack Pangolin needs on Linux.
@@ -75,7 +78,7 @@ submodules = "git submodule update --init --recursive"
 
 # 2) configure with the 'development' preset (RelWithDebInfo, all executables incl. basalt_vio).
 #    CMAKE_PREFIX_PATH=$CONDA_PREFIX makes find_package() resolve TBB/OpenCV/fmt/yaml-cpp/SQLite3 to the pixi env.
-configure = "cmake --preset development -DCMAKE_PREFIX_PATH=$CONDA_PREFIX"
+configure = "cmake --preset development -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DBUILD_PANGOLIN_LIBRAW=OFF"
 
 # 3) build the standalone VIO runner (pulls basalt_internal + Pangolin/opengv/apriltag/ros/fastcdr as needed)
 build = "cmake --build build --target basalt_vio -j"
@@ -84,5 +87,13 @@ build = "cmake --build build --target basalt_vio -j"
 build-all = "cmake --build build -j"
 
 # 4) run headless VIO on a Monado/EuRoC-layout dataset, e.g.:
-#    DATASET=datasets/MOO09_short_1_updown pixi run vio
+#    pixi run moo09-rerun
 configure-then-build = { depends-on = ["configure", "build"] }
+moo09-rerun = { cmd = "./build/basalt_vio --show-gui 0 --dataset-path datasets/MOO09_short_1_updown --dataset-type euroc --cam-calib data/msd/msdmo_calib.json --config-path data/msd/msdmo_config.json --deterministic 1 --rerun-rrd datasets/MOO09_short_1_updown/basalt_vio_moo09.rrd --save-trajectory tum --save-trajectory-fn datasets/MOO09_short_1_updown/basalt_vio_trajectory.txt", depends-on = ["configure-then-build"] }
+moo09-view = "rerun datasets/MOO09_short_1_updown/basalt_vio_moo09.rrd"
+mgo09-download = "hf download collabora/monado-slam-datasets M_monado_datasets/MG_reverb_g2/MGO_others/MGO09_short_1_updown.zip M_monado_datasets/MG_reverb_g2/extras/calibration.kb4.json --repo-type dataset --local-dir datasets/.hf-downloads"
+mgo09-extract = { cmd = "unzip -qn datasets/.hf-downloads/M_monado_datasets/MG_reverb_g2/MGO_others/MGO09_short_1_updown.zip -d datasets", depends-on = ["mgo09-download"] }
+mgo09-rerun = { cmd = "./build/basalt_vio --show-gui 0 --dataset-path datasets/MGO09_short_1_updown --dataset-type euroc --cam-calib datasets/.hf-downloads/M_monado_datasets/MG_reverb_g2/extras/calibration.kb4.json --config-path data/msd/msdmo_config.json --deterministic 1 --rerun-rrd datasets/MGO09_short_1_updown/basalt_vio_mgo09.rrd --save-trajectory tum --save-trajectory-fn datasets/MGO09_short_1_updown/basalt_vio_trajectory.txt", depends-on = ["configure-then-build", "mgo09-extract"] }
+mgo09-blueprint = "python scripts/rerun/mgo09_blueprint.py"
+mgo09-blueprint-test = "python -m unittest discover -s test -p 'test_rerun_blueprint.py'"
+mgo09-view = { cmd = "rerun --new datasets/MGO09_short_1_updown/basalt_vio_mgo09.rrd datasets/MGO09_short_1_updown/basalt_vio_mgo09.rbl", depends-on = ["mgo09-blueprint"] }

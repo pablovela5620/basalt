@@ -49,7 +49,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "vit_tracker_ui.hpp"
 
 #ifdef BASALT_RERUN
-#include <basalt/utils/rerun_export.h>
+#include <basalt/utils/rerun_vit_adapter.h>
 #endif
 
 #include <tbb/concurrent_queue.h>
@@ -57,14 +57,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <CLI/CLI.hpp>
 #include <opencv2/core/mat.hpp>
 #include <sophus/se3.hpp>
-
-#ifdef BASALT_RERUN
-#include <cerrno>
-#include <cstdlib>
-#include <limits>
-#include <mutex>
-#include <unordered_map>
-#endif
 
 #include <cstdio>
 #include <memory>
@@ -109,36 +101,6 @@ using std::make_unique;
 using std::string;
 using std::thread;
 using std::vector;
-
-#ifdef BASALT_RERUN
-namespace {
-
-int read_positive_int_env(const char *name, int default_value) {
-  const char *raw = std::getenv(name);
-  if (raw == nullptr || raw[0] == '\0') return default_value;
-
-  char *end = nullptr;
-  errno = 0;
-  const long value = std::strtol(raw, &end, 10);
-  if (errno != 0 || end == raw || *end != '\0' || value < 1 ||
-      value > std::numeric_limits<int>::max()) {
-    std::cerr << "[rerun] ignoring invalid " << name << "=" << raw << std::endl;
-    return default_value;
-  }
-
-  return static_cast<int>(value);
-}
-
-bool read_bool_env(const char *name, bool default_value) {
-  const char *raw = std::getenv(name);
-  if (raw == nullptr || raw[0] == '\0') return default_value;
-
-  const string value(raw);
-  return !(value == "0" || value == "false" || value == "FALSE" || value == "no" || value == "NO");
-}
-
-}  // namespace
-#endif
 
 struct Tracker::Implementation {
   static constexpr vit_tracker_extension_set_t exts{
@@ -201,24 +163,14 @@ struct Tracker::Implementation {
   OpticalFlowInput::Ptr partial_frame;
 
 #ifdef BASALT_RERUN
-  bool rerun_enabled = false;
-  bool rerun_spawn = false;
-  bool rerun_log_imu = false;
-  string rerun_connect_url;
-  string rerun_rrd_path;
-  int rerun_img_stride = 1;
-  int64_t rerun_start_t_ns = -1;
-  int64_t rerun_next_frame_idx = 0;
-  std::mutex rerun_mutex;
-  std::unordered_map<int64_t, int64_t> rerun_frame_idx_by_t_ns;
-  std::unique_ptr<RerunExporter> rerun_exporter;
+  std::unique_ptr<RerunVitAdapter> rerun;
 #endif
 
   explicit Implementation(const vit::Config *config) : show_gui(config->show_ui), cam_count(config->cam_count) {
     cout << "Basalt with cam_count=" << cam_count << ", show_gui=" << show_gui << "\n";
 
 #ifdef BASALT_RERUN
-    configure_rerun_from_env();
+    rerun = std::make_unique<RerunVitAdapter>();
 #endif
 
     // Basalt in its current state does not support monocular cameras, although it
@@ -320,109 +272,6 @@ struct Tracker::Implementation {
       std::abort();
     }
   }
-
-#ifdef BASALT_RERUN
-  void configure_rerun_from_env() {
-    const char *sink = std::getenv("BASALT_VIT_RERUN");
-    if (sink == nullptr || sink[0] == '\0') return;
-
-    rerun_enabled = true;
-    const string sink_value(sink);
-    if (sink_value == "spawn") {
-      rerun_spawn = true;
-    } else if (sink_value.size() > 4 && sink_value.compare(sink_value.size() - 4, 4, ".rrd") == 0) {
-      rerun_rrd_path = sink_value;
-    } else {
-      rerun_connect_url = sink_value;
-    }
-
-    rerun_img_stride = read_positive_int_env("BASALT_VIT_RERUN_IMG_STRIDE", 1);
-    rerun_log_imu = read_bool_env("BASALT_VIT_RERUN_IMU", false);
-  }
-
-  void start_rerun() {
-    if (!rerun_enabled || rerun_exporter) return;
-
-    rerun_exporter = std::make_unique<RerunExporter>("basalt_vit", rerun_rrd_path, rerun_spawn, rerun_connect_url);
-    if (!rerun_exporter->good()) {
-      std::cerr << "[rerun] VIT recording disabled (no sink attached)" << std::endl;
-      rerun_exporter.reset();
-      return;
-    }
-
-    vector<CamCalib> cams;
-    for (size_t i = 0; i < calib.intrinsics.size(); i++) {
-      const Eigen::VectorXd intr = calib.intrinsics[i].getParam();
-      const Eigen::Vector2i res = calib.resolution[i];
-      cams.push_back(CamCalib{calib.T_i_c[i], static_cast<float>(intr[0]), static_cast<float>(intr[1]),
-                              static_cast<float>(intr[2]), static_cast<float>(intr[3]), res[0], res[1]});
-    }
-    rerun_exporter->log_static_calib(cams);
-  }
-
-  int64_t rerun_start_time_for(int64_t t_ns) {
-    std::lock_guard<std::mutex> lock(rerun_mutex);
-    if (rerun_start_t_ns < 0) rerun_start_t_ns = t_ns;
-    return rerun_start_t_ns;
-  }
-
-  std::pair<int64_t, int64_t> rerun_timeline_for(int64_t t_ns) {
-    std::lock_guard<std::mutex> lock(rerun_mutex);
-    if (rerun_start_t_ns < 0) rerun_start_t_ns = t_ns;
-
-    auto it = rerun_frame_idx_by_t_ns.find(t_ns);
-    if (it == rerun_frame_idx_by_t_ns.end()) {
-      it = rerun_frame_idx_by_t_ns.emplace(t_ns, rerun_next_frame_idx++).first;
-    }
-
-    return {it->second, rerun_start_t_ns};
-  }
-
-  void rerun_note_frame_timestamp(int64_t t_ns) {
-    if (!rerun_exporter) return;
-    (void)rerun_timeline_for(t_ns);
-  }
-
-  void rerun_log_imu_sample(const vit::ImuSample &sample) {
-    if (!rerun_exporter || !rerun_log_imu) return;
-    const int64_t start_t_ns = rerun_start_time_for(sample.timestamp);
-    rerun_exporter->log_imu_sample(sample.timestamp, {sample.wx, sample.wy, sample.wz},
-                                   {sample.ax, sample.ay, sample.az}, start_t_ns);
-  }
-
-  void rerun_log_state(const PoseVelBiasState<double>::Ptr &data) {
-    if (!rerun_exporter || !data) return;
-
-    const auto [frame_idx, start_t_ns] = rerun_timeline_for(data->t_ns);
-    rerun_exporter->begin_frame(frame_idx, data->t_ns, start_t_ns);
-    rerun_exporter->log_pose(data->T_w_i);
-    rerun_exporter->log_metrics(data->vel_w_i, data->bias_gyro, data->bias_accel);
-
-    if (frame_idx % rerun_img_stride != 0 || !data->input_images) return;
-
-    const auto &img_data = data->input_images->img_data;
-    const auto &features_per_cam = data->input_images->stats.features_per_cam;
-    constexpr uint32_t FEATURE_COLOR = 0x39ff14ffu;  // neon green
-
-    for (size_t cam = 0; cam < img_data.size(); cam++) {
-      const auto &img = img_data[cam].img;
-      if (!img) continue;
-
-      rerun_exporter->log_image(int(cam), img->ptr, int(img->w), int(img->h), img->pitch);
-
-      if (cam >= features_per_cam.size()) continue;
-      vector<Eigen::Vector2f> uv;
-      vector<uint32_t> rgba;
-      uv.reserve(features_per_cam[cam].size());
-      rgba.reserve(features_per_cam[cam].size());
-      for (const vit::PoseFeature &feature : features_per_cam[cam]) {
-        uv.emplace_back(feature.u, feature.v);
-        rgba.push_back(FEATURE_COLOR);
-      }
-      rerun_exporter->log_keypoints(int(cam), uv, rgba);
-    }
-  }
-#endif
 
   void apply_cam_calibration(const vit::CameraCalibration &cam_calib) {
     using Scalar = double;
@@ -575,7 +424,7 @@ struct Tracker::Implementation {
     vio->initialize(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
 #ifdef BASALT_RERUN
-    start_rerun();
+    rerun->start(calib);
 #endif
 
     if (show_gui) ui.start(vio->getT_w_i_init(), calib, vio_config, opt_flow_ptr, vio);
@@ -594,7 +443,7 @@ struct Tracker::Implementation {
     if (show_gui) ui.stop();
 
 #ifdef BASALT_RERUN
-    if (rerun_exporter) rerun_exporter->flush();
+    rerun->flush();
 #endif
 
     // TODO: There is a segfault when closing monado without starting the stream
@@ -620,7 +469,8 @@ struct Tracker::Implementation {
     opt_flow_ptr->input_imu_queue.push(data);
 
 #ifdef BASALT_RERUN
-    rerun_log_imu_sample(*s);
+    rerun->log_imu_sample(s->timestamp, {s->wx, s->wy, s->wz},
+                          {s->ax, s->ay, s->az});
 #endif
   }
 
@@ -637,13 +487,15 @@ struct Tracker::Implementation {
       partial_frame->t_ns = s->timestamp;
 
 #ifdef BASALT_RERUN
-      rerun_note_frame_timestamp(s->timestamp);
+      rerun->note_frame_timestamp(s->timestamp);
 #endif
 
       // Initialize stats
       partial_frame->stats.enabled_exts = enabled_exts;
 #ifdef BASALT_RERUN
-      if (rerun_exporter) partial_frame->stats.enabled_exts.has_pose_features = true;
+      if (rerun->requires_pose_features()) {
+        partial_frame->stats.enabled_exts.has_pose_features = true;
+      }
 #endif
       if (enabled_exts.has_pose_timing) {
         partial_frame->stats.ts = s->timestamp;
@@ -732,7 +584,7 @@ struct Tracker::Implementation {
     if (show_gui) ui.log_vio_data(data);
 
 #ifdef BASALT_RERUN
-    rerun_log_state(data);
+    rerun->log_state(*data);
 #endif
 
     data->input_images->addTime("consumer_state_pushed");

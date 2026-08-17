@@ -54,14 +54,8 @@ class RerunExporter {
 
   /// Log the ground-truth trajectory as a static green polyline at
   /// `/world/rig_0_path`, with start/end markers at `/world/rig_0_path/endpoints`.
-  /// No-op if `gt_positions` is empty.
-  void log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions);
-
-  /// Log the full raw IMU stream (gyro rad/s, accel m/s²) as two
-  /// multi-component `Scalars` at `/world/rig_0/imu_0/{gyro,accel}` on the
-  /// `sensor_time` timeline. `t_ns`, `gyro`, `accel` are parallel arrays.
-  void log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
-               const std::vector<Eigen::Vector3d>& accel, int64_t start_t_ns);
+  /// No-op if `count` is zero.
+  void log_gt_path(const Eigen::Vector3d* gt_positions, size_t count);
 
   /// Log one live IMU sample on the `sensor_time` timeline. Intended for
   /// streaming paths that do not have the full IMU sequence up front.

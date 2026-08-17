@@ -487,6 +487,22 @@ if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
   endif()
 endif()
 
+if(BASALT_ENABLE_RERUN)
+  add_library(
+    basalt_rerun STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_export.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_offline_adapter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_vit_adapter.cpp
+  )
+  target_include_directories(basalt_rerun PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(basalt_rerun PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/vit)
+  target_link_libraries(
+    basalt_rerun
+    PUBLIC basalt::basalt-headers
+    PRIVATE rerun_sdk basalt::opencv TBB::tbb
+  )
+endif()
+
 add_library(basalt SHARED)
 
 target_sources(
@@ -499,8 +515,7 @@ target_compile_definitions(basalt PRIVATE VIT_INTERFACE_IMPLEMENTATION)
 
 target_link_libraries(basalt basalt_internal)
 if(BASALT_ENABLE_RERUN)
-  target_sources(basalt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_export.cpp)
-  target_link_libraries(basalt rerun_sdk basalt::opencv)  # opencv for JPEG image encoding
+  target_link_libraries(basalt basalt_rerun)
   target_compile_definitions(basalt PRIVATE BASALT_RERUN)
 endif()
 
@@ -533,8 +548,7 @@ if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
   add_executable(basalt_vio src/vio.cpp)
   target_link_libraries(basalt_vio basalt_internal pangolin basalt::cli11)
   if(BASALT_ENABLE_RERUN)
-    target_sources(basalt_vio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/utils/rerun_export.cpp)
-    target_link_libraries(basalt_vio rerun_sdk basalt::opencv)  # opencv for JPEG image encoding
+    target_link_libraries(basalt_vio basalt_rerun)
     target_compile_definitions(basalt_vio PRIVATE BASALT_RERUN)
   endif()
 

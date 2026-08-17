@@ -29,10 +29,11 @@ git checkout pixi && git rebase main               # replay packaging + rerun vi
 git push --force-with-lease origin pixi
 ```
 
-Rebases onto a newer upstream stay low-conflict because the pixi changes are
-purely additive and the rerun changes are isolated — `#ifdef BASALT_RERUN`
-blocks in `src/vio.cpp` plus two self-contained `rerun_export.*` files (the SLAM
-core is untouched).
+Rebases onto a newer upstream stay low-conflict because the SLAM core is
+untouched. Rerun is a separate `basalt_rerun` library: its offline and live VIT
+adapters own configuration, timelines, conversion, and logging. Upstream files
+retain only small `#ifdef BASALT_RERUN` lifecycle hooks. Building with
+`-DBASALT_ENABLE_RERUN=OFF` removes those hooks and the Rerun CLI options.
 
 **One-command build (pixi):**
 

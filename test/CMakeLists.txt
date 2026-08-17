@@ -22,6 +22,14 @@ target_link_libraries(test_linearization gtest gtest_main basalt_internal)
 add_executable(test_patch src/test_patch.cpp)
 target_link_libraries(test_patch gtest gtest_main basalt_internal)
 
+if(BASALT_ENABLE_RERUN)
+  add_executable(test_rerun_vit_adapter src/test_rerun_vit_adapter.cpp)
+  target_link_libraries(test_rerun_vit_adapter gtest gtest_main basalt_rerun)
+
+  add_executable(test_rerun_offline_adapter src/test_rerun_offline_adapter.cpp)
+  target_link_libraries(test_rerun_offline_adapter gtest gtest_main basalt_rerun)
+endif()
+
 enable_testing()
 
 include(GoogleTest)
@@ -32,3 +40,7 @@ gtest_add_tests(TARGET test_nfr AUTO)
 gtest_add_tests(TARGET test_qr AUTO)
 gtest_add_tests(TARGET test_linearization AUTO)
 gtest_add_tests(TARGET test_patch AUTO)
+if(BASALT_ENABLE_RERUN)
+  gtest_add_tests(TARGET test_rerun_vit_adapter AUTO)
+  gtest_add_tests(TARGET test_rerun_offline_adapter AUTO)
+endif()

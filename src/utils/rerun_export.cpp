@@ -116,12 +116,14 @@ void RerunExporter::log_static_calib(const std::vector<CamCalib>& cams) {
   }
 }
 
-void RerunExporter::log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions) {
-  if (!good() || gt_positions.empty()) return;
+void RerunExporter::log_gt_path(const Eigen::Vector3d* gt_positions,
+                                size_t count) {
+  if (!good() || gt_positions == nullptr || count == 0) return;
 
   std::vector<rerun::datatypes::Vec3D> pts;
-  pts.reserve(gt_positions.size());
-  for (const auto& g : gt_positions) {
+  pts.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    const Eigen::Vector3d& g = gt_positions[i];
     pts.push_back({static_cast<float>(g.x()), static_cast<float>(g.y()), static_cast<float>(g.z())});
   }
   impl_->rec->log_static(kGtPath,
@@ -131,15 +133,6 @@ void RerunExporter::log_gt_path(const std::vector<Eigen::Vector3d>& gt_positions
   impl_->rec->log_static(kGtEndpoints, rerun::Points3D(ends)
                                            .with_colors({kGtStart, kGtEnd})
                                            .with_radii({kEndpointRadius, kEndpointRadius}));
-}
-
-void RerunExporter::log_imu(const std::vector<int64_t>& t_ns, const std::vector<Eigen::Vector3d>& gyro,
-                            const std::vector<Eigen::Vector3d>& accel, int64_t start_t_ns) {
-  if (!good()) return;
-  const size_t n = std::min(t_ns.size(), std::min(gyro.size(), accel.size()));
-  for (size_t i = 0; i < n; ++i) {
-    log_imu_sample(t_ns[i], gyro[i], accel[i], start_t_ns);
-  }
 }
 
 void RerunExporter::log_imu_sample(int64_t t_ns, const Eigen::Vector3d& gyro,
