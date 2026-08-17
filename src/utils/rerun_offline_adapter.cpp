@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -40,9 +41,29 @@ struct RerunOfflineAdapter::Impl {
         image_timestamps->begin());
   }
 
+  void log_imu_through(int64_t t_ns) {
+    std::lock_guard<std::mutex> lock(imu_mutex);
+    if (gyro == nullptr || accel == nullptr || exporter == nullptr) return;
+
+    const size_t sample_count = std::min(gyro->size(), accel->size());
+    while (imu_cursor < sample_count &&
+           (*gyro)[imu_cursor].timestamp_ns <= t_ns) {
+      const auto& gyro_sample = (*gyro)[imu_cursor];
+      exporter->log_imu_sample(
+          gyro_sample.timestamp_ns, gyro_sample.data,
+          (*accel)[imu_cursor].data, start_t_ns,
+          frame_index(gyro_sample.timestamp_ns));
+      ++imu_cursor;
+    }
+  }
+
   RerunOfflineConfig config;
   int64_t start_t_ns = -1;
   const std::vector<int64_t>* image_timestamps = nullptr;
+  const Eigen::aligned_vector<GyroData>* gyro = nullptr;
+  const Eigen::aligned_vector<AccelData>* accel = nullptr;
+  size_t imu_cursor = 0;
+  std::mutex imu_mutex;
   bool reprojection_checked = false;
   std::unique_ptr<RerunExporter> exporter;
 };
@@ -85,19 +106,15 @@ void RerunOfflineAdapter::start(const Calibration<double>& calibration,
   }
   impl_->exporter->log_static_calib(cameras);
 
-  const auto& gyro = dataset.get_gyro_data();
-  const auto& accel = dataset.get_accel_data();
-  const size_t sample_count = std::min(gyro.size(), accel.size());
-  for (size_t i = 0; i < sample_count; ++i) {
-    impl_->exporter->log_imu_sample(gyro[i].timestamp_ns, gyro[i].data,
-                                    accel[i].data, start_t_ns);
-  }
+  impl_->gyro = &dataset.get_gyro_data();
+  impl_->accel = &dataset.get_accel_data();
 }
 
 void RerunOfflineAdapter::log_state(
     const PoseVelBiasState<double>& state) {
   if (!active()) return;
 
+  impl_->log_imu_through(state.t_ns);
   impl_->exporter->begin_frame(impl_->frame_index(state.t_ns), state.t_ns,
                                impl_->start_t_ns);
   impl_->exporter->log_pose(state.T_w_i);
@@ -118,6 +135,7 @@ void RerunOfflineAdapter::log_visualization(
     const VioVisualizationData& data) {
   if (!active()) return;
 
+  impl_->log_imu_through(data.t_ns);
   impl_->exporter->begin_frame(impl_->frame_index(data.t_ns), data.t_ns,
                                impl_->start_t_ns);
 

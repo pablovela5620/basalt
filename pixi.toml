@@ -29,6 +29,9 @@ pkg-config = "*"
 git = "*"
 huggingface_hub = ">=1.22,<2"  # `hf` CLI for the public Monado SLAM datasets
 unzip = "*"
+ffmpeg = "*"         # libav headers/libraries and CLI for native RoboCap H.264 input
+pyyaml = "*"         # Kalibr YAML input for the RoboCap calibration converter
+tyro = "*"           # typed CLI for repository Python tools
 
 # --- core libraries required by find_package() (cross-platform) ---
 tbb-devel = "*"     # find_package(TBB): headers + libs (oneTBB)
@@ -97,3 +100,11 @@ mgo09-rerun = { cmd = "./build/basalt_vio --show-gui 0 --dataset-path datasets/M
 mgo09-blueprint = "python scripts/rerun/mgo09_blueprint.py"
 mgo09-blueprint-test = "python -m unittest discover -s test -p 'test_rerun_blueprint.py'"
 mgo09-view = { cmd = "rerun --new datasets/MGO09_short_1_updown/basalt_vio_mgo09.rrd datasets/MGO09_short_1_updown/basalt_vio_mgo09.rbl", depends-on = ["mgo09-blueprint"] }
+
+# Native offline RoboCap input. Arguments after `--` are forwarded to the
+# calibration converter, e.g. `pixi run robocap-calib -- --help`.
+robocap-calib = "python scripts/basalt_convert_robocap_calib.py"
+robocap-calib-test = "python -m unittest discover -s test -p 'test_robocap_calibration.py' -v"
+robocap-dataset-test-build = { cmd = "cmake --build build --target test_robocap_dataset -j", depends-on = ["configure"] }
+robocap-dataset-test = { cmd = "./build/test/test_robocap_dataset --gtest_color=no", depends-on = ["robocap-dataset-test-build"] }
+robocap-test = { depends-on = ["robocap-calib-test", "robocap-dataset-test"] }

@@ -16,6 +16,7 @@ stream lifecycle and the static world coordinate frame; per-frame logging
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -57,10 +58,11 @@ class RerunExporter {
   /// No-op if `count` is zero.
   void log_gt_path(const Eigen::Vector3d* gt_positions, size_t count);
 
-  /// Log one live IMU sample on the `sensor_time` timeline. Intended for
-  /// streaming paths that do not have the full IMU sequence up front.
+  /// Log one IMU sample on `sensor_time` and, when frame_idx is present, on
+  /// the matching `frame` timeline. Streaming callers may omit frame_idx.
   void log_imu_sample(int64_t t_ns, const Eigen::Vector3d& gyro, const Eigen::Vector3d& accel,
-                      int64_t start_t_ns);
+                      int64_t start_t_ns,
+                      std::optional<int64_t> frame_idx = std::nullopt);
 
   // --- per-frame logging (call begin_frame, then any log_* below). begin_frame
   // takes an explicit frame index (derived from t_ns) so the state-queue and

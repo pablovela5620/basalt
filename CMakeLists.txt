@@ -323,6 +323,14 @@ include(CMakeDependentOption)
 cmake_dependent_option(BASALT_ENABLE_ROSBAG2 "Enable rosbag2 feature" ON "yaml-cpp_FOUND AND SQLite3_FOUND" OFF)
 message(STATUS "BASALT_ENABLE_ROSBAG2: ${BASALT_ENABLE_ROSBAG2}")
 
+# Enable native RoboCap input if both FFmpeg/libav and SQLite3 are found.
+find_package(PkgConfig)
+if(PkgConfig_FOUND)
+  pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+endif()
+cmake_dependent_option(BASALT_ENABLE_ROBOCAP "Enable native RoboCap input" ON "FFMPEG_FOUND AND SQLite3_FOUND" OFF)
+message(STATUS "BASALT_ENABLE_ROBOCAP: ${BASALT_ENABLE_ROBOCAP}")
+
 # Rerun (rerun.io) visualization backend. The C++ SDK comes from conda-forge
 # (librerun-sdk); find_package resolves it from $CONDA_PREFIX (CMAKE_PREFIX_PATH
 # is set by the pixi `configure` task). Linked onto the targets that log Rerun
@@ -471,6 +479,7 @@ if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
            ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_kitti.h
            ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_rosbag.h
            ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_rosbag2.h
+           ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_robocap.h
            ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/dataset_io_uzh.h
            ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/marg_data_io.h
            ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/vi_estimator/nfr_mapper.h
@@ -484,6 +493,11 @@ if(NOT BASALT_BUILD_SHARED_LIBRARY_ONLY)
 
   if(BASALT_ENABLE_ROSBAG2)
     target_link_libraries(basalt_internal PRIVATE fastcdr yaml-cpp::yaml-cpp SQLite::SQLite3)
+  endif()
+  if(BASALT_ENABLE_ROBOCAP)
+    target_sources(basalt_internal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/io/dataset_io_robocap.cpp)
+    target_link_libraries(basalt_internal PRIVATE PkgConfig::FFMPEG SQLite::SQLite3)
+    target_compile_definitions(basalt_internal PUBLIC BASALT_ENABLE_ROBOCAP)
   endif()
 endif()
 

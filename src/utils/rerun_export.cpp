@@ -136,10 +136,17 @@ void RerunExporter::log_gt_path(const Eigen::Vector3d* gt_positions,
 }
 
 void RerunExporter::log_imu_sample(int64_t t_ns, const Eigen::Vector3d& gyro,
-                                   const Eigen::Vector3d& accel, int64_t start_t_ns) {
+                                   const Eigen::Vector3d& accel,
+                                   int64_t start_t_ns,
+                                   std::optional<int64_t> frame_idx) {
   if (!good()) return;
-  impl_->rec->disable_timeline("frame");
-  impl_->rec->set_time_duration_secs("sensor_time", static_cast<double>(t_ns - start_t_ns) * 1e-9);
+  if (frame_idx.has_value()) {
+    begin_frame(*frame_idx, t_ns, start_t_ns);
+  } else {
+    impl_->rec->disable_timeline("frame");
+    impl_->rec->set_time_duration_secs(
+        "sensor_time", static_cast<double>(t_ns - start_t_ns) * 1e-9);
+  }
   impl_->rec->log(kImuGyro, rerun::Scalars({gyro.x(), gyro.y(), gyro.z()}));
   impl_->rec->log(kImuAccel, rerun::Scalars({accel.x(), accel.y(), accel.z()}));
 }

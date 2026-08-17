@@ -39,6 +39,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <basalt/io/dataset_io_rosbag.h>
 #include <basalt/io/dataset_io_rosbag2.h>
 #include <basalt/io/dataset_io_uzh.h>
+#ifdef BASALT_ENABLE_ROBOCAP
+#include <basalt/io/dataset_io_robocap.h>
+#endif
 #include <basalt/utils/build_config.h>
 
 namespace basalt {
@@ -57,6 +60,11 @@ DatasetIoInterfacePtr DatasetIoFactory::getDatasetIo(const std::string &dataset_
 #ifdef BASALT_ENABLE_ROSBAG2
   else if (dataset_type == "ros2") {
     return DatasetIoInterfacePtr(new Rosbag2IO);
+  }
+#endif
+#ifdef BASALT_ENABLE_ROBOCAP
+  else if (dataset_type == "robocap") {
+    return DatasetIoInterfacePtr(new RobocapIO);
   }
 #endif
   else {
