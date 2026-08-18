@@ -1,4 +1,4 @@
-"""Tests for the shared four-camera basalt_vio Rerun blueprint."""
+"""Tests for the shared basalt_vio Rerun blueprint."""
 
 from __future__ import annotations
 

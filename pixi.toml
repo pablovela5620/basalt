@@ -8,8 +8,8 @@ platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
 # ---------------------------------------------------------------------------
 # IMPORTANT (numerical reproducibility): Eigen, Sophus and cereal are NOT taken
 # from conda-forge. The build is pinned to the BUNDLED Eigen 5.0.1 / Sophus /
-# cereal under thirdparty/basalt-headers/thirdparty/* (EIGEN_ROOT). Run the
-# `submodules` task (git submodule update --init --recursive) before configuring.
+# cereal under thirdparty/basalt-headers/thirdparty/* (EIGEN_ROOT). The `_submodules`
+# task (git submodule update --init --recursive) fetches them before configuring.
 #
 # PLATFORMS: linux-64 + linux-aarch64 + osx-arm64 (Apple Silicon). Everything
 # resolves from conda-forge. On macOS the only non-pixi prerequisite is the
@@ -79,10 +79,13 @@ xorg-libxfixes = "*"
 # TASKS. Visible tasks are the ones that make sense to run on their own;
 # `_`-prefixed tasks are chained intermediaries (hidden from `pixi task list`).
 #
-#   pixi run build     — fetch submodules, configure, compile basalt_vio
-#   pixi run robocap   — RoboCap demo: build + download + VIO + Rerun viewer
-#   pixi run msd       — same for Monado SLAM; args pick the dataset:
-#                        pixi run msd MOO09_short_1_updown MO_odyssey_plus MOO_others
+#   pixi run build          — fetch submodules, configure, compile basalt_vio
+#   pixi run robocap        — RoboCap demo: build + download + VIO + Rerun viewer
+#                             (`pixi run robocap stereo` = front pair only)
+#   pixi run msd            — same for Monado SLAM; args pick the dataset:
+#                             pixi run msd MOO09_short_1_updown MO_odyssey_plus MOO_others
+#   pixi run robocap-calib  — RoboCap factory calibration -> Basalt JSONs
+#   pixi run robocap-test   — calibration + dataset reader + blueprint tests
 # ---------------------------------------------------------------------------
 
 [tasks]

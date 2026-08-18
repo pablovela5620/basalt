@@ -54,8 +54,8 @@ downloads the [RoboCap example session](https://huggingface.co/datasets/pablovel
 the recording in the Rerun viewer. Pixi supplies the compiler, CMake, native
 libraries, Python tools, FFmpeg, and Rerun — no environment activation needed.
 
-The other visible tasks (`pixi task list` shows them; `_`-prefixed helpers are
-chained intermediaries):
+The other tasks and variants (`pixi task list` shows the visible tasks;
+`_`-prefixed helpers are chained intermediaries):
 
 ```bash
 pixi run robocap stereo        # the same demo using only the front stereo pair
@@ -68,10 +68,11 @@ pixi run robocap-test          # calibration + dataset reader + blueprint tests
 
 `msd` takes three arguments — dataset name, device group, and subgroup — matching
 the folder layout of [monado-slam-datasets](https://huggingface.co/datasets/collabora/monado-slam-datasets).
-Both demos write `basalt_vio.rrd`, a TUM trajectory, and a shared Rerun layout
-(`scripts/rerun/basalt_vio_blueprint.py`) under `datasets/`. For native RoboCap
-data, follow the [RoboCap offline input guide](doc/RoboCap.md); it includes
-calibration, four-camera VIO, Rerun recording, and adapter test commands.
+Both demos write an `.rrd` recording, a TUM trajectory, and a matching Rerun
+layout under `datasets/`; `scripts/rerun/basalt_vio_blueprint.py` sizes that
+layout from the run's calibration, so 2- and 4-camera rigs share it. For native
+RoboCap data, follow the [RoboCap offline input guide](doc/RoboCap.md); it covers
+calibration, both camera sets, Rerun recording, and the adapter tests.
 
 ## Installation
 

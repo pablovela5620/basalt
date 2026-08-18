@@ -5,16 +5,14 @@ reads the factory calibration from the headset and hands it to Basalt through
 the VIT interface, so no config file is needed for a first run.
 
 This fork builds everything with [pixi](https://pixi.prefix.dev). The overall
-setup (see also `implementation-log.html` in this directory for a worked,
-validated log on real hardware paths):
+setup:
 
-1. Build `libbasalt.so` here: `pixi run submodules && pixi run configure &&
-   pixi run build-all` (the `basalt` target implements VIT 2.0,
-   `thirdparty/vit/vit_interface.h`).
+1. Build `libbasalt.so` here: `pixi run _build-all`, which fetches submodules,
+   configures, and compiles every target (the `basalt` target implements VIT
+   2.0, `thirdparty/vit/vit_interface.h`).
 2. Build Monado (pixi-packaged mirror: `github.com/pablovela5620/monado`,
    branch `pixi`): `pixi run configure-then-build`.
-3. Install udev rules so the headset is accessible without root (see the
-   runbook in `implementation-log.html`).
+3. Install udev rules so the headset is accessible without root.
 4. Run:
 
 ```bash
@@ -41,7 +39,7 @@ between the two projects.
 
 ## Live Rerun visualization
 
-The VIT path can stream to [Rerun](https://rerun.io) (viewer 0.33):
+The VIT path can stream to [Rerun](https://rerun.io) (viewer 0.36):
 
 - `BASALT_VIT_RERUN=spawn` — spawn a local viewer;
   `=<url>` — connect to a running viewer (`rerun+http://…/proxy`);
