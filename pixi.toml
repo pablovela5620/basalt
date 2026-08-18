@@ -96,7 +96,7 @@ _submodules = "git submodule update --init --recursive"
 # BASALT_BUILD_TESTS only adds test targets; `build` still compiles just basalt_vio.
 _configure = { cmd = "cmake --preset development -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DBUILD_PANGOLIN_LIBRAW=OFF -DBASALT_BUILD_TESTS=ON", depends-on = ["_submodules"] }
 # The standalone VIO runner (pulls basalt_internal + Pangolin/opengv/apriltag/ros/fastcdr as needed).
-build = { cmd = "cmake --build build --target basalt_vio -j", depends-on = ["_configure"] }
+build = { cmd = "cmake --build build --target basalt_vio -j", depends-on = ["_configure"], description = "Fetch submodules, configure, and compile basalt_vio" }
 # Everything (lib + all executables): `pixi run _build-all`.
 _build-all = { cmd = "cmake --build build -j", depends-on = ["_configure"] }
 
@@ -109,6 +109,7 @@ _msd-extract = { cmd = "unzip -qn datasets/monado-slam-datasets/M_monado_dataset
 _msd-vio = { cmd = "./build/basalt_vio --show-gui 0 --dataset-path datasets/{{ name }} --dataset-type euroc --cam-calib datasets/monado-slam-datasets/M_monado_datasets/{{ group }}/extras/calibration.kb4.json --config-path data/msd/msdmo_config.json --deterministic 1 --rerun-rrd datasets/{{ name }}/basalt_vio.rrd --save-trajectory tum --save-trajectory-fn datasets/{{ name }}/basalt_vio_trajectory.txt", args = ["name", "group", "subgroup"], depends-on = ["build", { task = "_msd-extract", args = ["{{ name }}", "{{ group }}", "{{ subgroup }}"] }] }
 
 [tasks.msd]
+description = "Monado SLAM demo: build + download + VIO + Rerun viewer (args: name group subgroup, default MGO09)"
 args = [
   { arg = "name", default = "MGO09_short_1_updown" },
   { arg = "group", default = "MG_reverb_g2" },
@@ -136,6 +137,7 @@ depends-on = ["build", "_robocap-download"]
 [tasks.robocap]
 # The one-command RoboCap demo: build + download + VIO + Rerun viewer.
 # `pixi run robocap` = four coverage cameras; `pixi run robocap stereo` = front pair.
+description = "RoboCap demo: build + download + VIO + Rerun viewer ('robocap stereo' = front pair only)"
 args = [{ arg = "variant", default = "coverage" }]
 cmd = 'rerun --new datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}.rrd datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}.rbl'
 depends-on = [
@@ -149,6 +151,7 @@ depends-on = [
 [tasks.robocap-calib]
 # Native offline RoboCap input. Arguments after `--` are forwarded to the
 # calibration converter, e.g. `pixi run robocap-calib -- --help`.
+description = "Convert a RoboCap factory calibration to Basalt JSONs (coverage + stereo)"
 cmd = "python scripts/basalt_convert_robocap_calib.py"
 
 [tasks._robocap-calib-test]
@@ -166,4 +169,5 @@ depends-on = ["_robocap-dataset-test-build"]
 cmd = "python -m unittest discover -s test -p 'test_rerun_blueprint.py'"
 
 [tasks.robocap-test]
+description = "Run the RoboCap adapter tests: calibration + dataset reader + blueprint"
 depends-on = ["_robocap-calib-test", "_robocap-dataset-test", "_blueprint-test"]
