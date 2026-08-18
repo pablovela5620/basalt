@@ -4,6 +4,7 @@
 #include <basalt/calibration/calibration.hpp>
 #include <basalt/io/dataset_io.h>
 #include <basalt/utils/rerun_export.h>
+#include <basalt/utils/rerun_obs_style.h>
 #include <basalt/vi_estimator/vio_estimator.h>
 
 #include <algorithm>
@@ -59,6 +60,7 @@ struct RerunOfflineAdapter::Impl {
 
   RerunOfflineConfig config;
   int64_t start_t_ns = -1;
+  double cam0_width = 0.0;
   const std::vector<int64_t>* image_timestamps = nullptr;
   const Eigen::aligned_vector<GyroData>* gyro = nullptr;
   const Eigen::aligned_vector<AccelData>* accel = nullptr;
@@ -105,6 +107,8 @@ void RerunOfflineAdapter::start(const Calibration<double>& calibration,
         static_cast<float>(intrinsics[3]), resolution[0], resolution[1]});
   }
   impl_->exporter->log_static_calib(cameras);
+  // Pangolin's do_show_obs sizes every camera's rings from cam0's width.
+  if (!calibration.resolution.empty()) impl_->cam0_width = calibration.resolution[0].x();
 
   impl_->gyro = &dataset.get_gyro_data();
   impl_->accel = &dataset.get_accel_data();
@@ -159,13 +163,21 @@ void RerunOfflineAdapter::log_visualization(
     for (size_t cam = 0; cam < data.projections->size(); ++cam) {
       const auto& projections = (*data.projections)[cam];
       std::vector<Eigen::Vector2f> positions;
+      std::vector<float> radii;
+      std::vector<uint32_t> colors;
       positions.reserve(projections.size());
+      radii.reserve(projections.size());
+      colors.reserve(projections.size());
       for (const auto& projection : projections) {
         positions.emplace_back(static_cast<float>(projection[0]),
                                static_cast<float>(projection[1]));
+        const ObsRingStyle style =
+            depth_coded_ring(projection[2], impl_->cam0_width);
+        radii.push_back(style.radius);
+        colors.push_back(style.rgba);
       }
       impl_->exporter->log_observations(static_cast<int>(cam), positions,
-                                        0xff00ffffu);
+                                        radii, colors);
     }
 
     if (!impl_->reprojection_checked && optical_flow) {

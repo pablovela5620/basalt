@@ -204,12 +204,27 @@ void RerunExporter::log_keypoints(int cam, const std::vector<Eigen::Vector2f>& u
   impl_->rec->log(cam_keypoints(cam), rerun::Points2D(pts).with_colors(colors).with_radii(kKeypointRadius));
 }
 
-void RerunExporter::log_observations(int cam, const std::vector<Eigen::Vector2f>& uv, uint32_t rgba) {
+void RerunExporter::log_observations(int cam, const std::vector<Eigen::Vector2f>& uv,
+                                     const std::vector<float>& radii, const std::vector<uint32_t>& rgba) {
   if (!good() || uv.empty()) return;
-  std::vector<rerun::datatypes::Vec2D> pts;
-  pts.reserve(uv.size());
-  for (const auto& p : uv) pts.push_back({p.x(), p.y()});
-  impl_->rec->log(cam_observations(cam), rerun::Points2D(pts).with_colors(color_rgba(rgba)).with_radii(kObsRadius));
+  std::vector<rerun::components::Position2D> centers;
+  std::vector<rerun::components::HalfSize2D> half_sizes;
+  std::vector<rerun::Color> colors;
+  centers.reserve(uv.size());
+  half_sizes.reserve(uv.size());
+  colors.reserve(uv.size());
+  for (size_t i = 0; i < uv.size(); ++i) {
+    centers.push_back({uv[i].x(), uv[i].y()});
+    const float radius = i < radii.size() ? radii[i] : kObsRadius;
+    half_sizes.push_back({radius, radius});
+    colors.push_back(color_rgba(i < rgba.size() ? rgba[i] : 0xffffffffu));
+  }
+  // Ring perimeters (Ellipses2D renders outlines), like Pangolin's
+  // glDrawCirclePerimeter; the stroke is in UI points so it stays crisp at
+  // any zoom while the ring diameter scales with the image.
+  impl_->rec->log(cam_observations(cam), rerun::Ellipses2D::from_centers_and_half_sizes(centers, half_sizes)
+                                             .with_colors(colors)
+                                             .with_line_radii(rerun::components::Radius::ui_points(1.5f)));
 }
 
 void RerunExporter::log_landmarks(const std::vector<Eigen::Vector3f>& points,

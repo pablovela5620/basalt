@@ -91,10 +91,14 @@ class RerunExporter {
                      const std::vector<uint32_t>& rgba);
 
   /// 2D reprojections of the 3D landmarks for one camera at
-  /// `/world/rig_0/cam_{cam}/pinhole/observations` (`Points2D`). These should
-  /// land on the tracked keypoints (small reprojection error) — the visual proof
-  /// the 3D map and the 2D features correspond.
-  void log_observations(int cam, const std::vector<Eigen::Vector2f>& uv, uint32_t rgba);
+  /// `/world/rig_0/cam_{cam}/pinhole/observations`, drawn as `Ellipses2D`
+  /// rings whose per-point radius (image pixels) and packed `0xRRGGBBAA`
+  /// color encode landmark depth, matching the Pangolin do_show_obs overlay.
+  /// `uv`, `radii` and `rgba` are parallel. These should land on the tracked
+  /// keypoints (small reprojection error) — the visual proof the 3D map and
+  /// the 2D features correspond.
+  void log_observations(int cam, const std::vector<Eigen::Vector2f>& uv,
+                        const std::vector<float>& radii, const std::vector<uint32_t>& rgba);
 
   /// 3D landmark cloud at `/world/landmarks` (`Points3D`, world frame), one
   /// packed `0xRRGGBBAA` color per point. `points` and `rgba` are parallel.
