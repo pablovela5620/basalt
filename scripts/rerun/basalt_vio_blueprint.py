@@ -1,16 +1,17 @@
-"""Generate the default Rerun layout for a four-camera basalt_vio recording.
+"""Generate the default Rerun layout for a basalt_vio recording.
 
 The entity paths below are basalt_vio's own logging schema, so the layout
 applies to any dataset the runner supports (Monado SLAM, RoboCap, ...).
-
-TODO: the camera count is hardcoded to 4; make it a parameter for rigs
-with 2 or 6 cameras.
+The camera count is read from the Basalt calibration that produced the
+recording, so 2-camera stereo rigs and 4-camera rigs share this script.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import rerun.blueprint as rrb
 import tyro
@@ -25,6 +26,24 @@ class CliArgs:
 
     output: Path
     """Destination `.rbl` path."""
+    calibration: Path
+    """Basalt calibration JSON of the run; sets the camera view count."""
+
+
+def count_cameras(calibration_path: Path) -> int:
+    """Read the camera count from a Basalt cereal calibration file.
+
+    Args:
+        calibration_path: Basalt calibration JSON (``{"value0": {...}}``).
+
+    Returns:
+        Number of cameras in the calibration.
+    """
+    document: dict[str, Any] = json.loads(calibration_path.read_text(encoding="utf-8"))
+    cameras: int = len(document["value0"]["intrinsics"])
+    if cameras < 1:
+        raise ValueError(f"Calibration {calibration_path} lists no cameras")
+    return cameras
 
 
 def _camera_view(camera_index: int) -> rrb.Spatial2DView:
@@ -44,31 +63,32 @@ def _camera_view(camera_index: int) -> rrb.Spatial2DView:
     )
 
 
-def build_blueprint() -> rrb.Blueprint:
-    """Build a compact layout for inspecting four-camera VIO.
+def build_blueprint(num_cameras: int) -> rrb.Blueprint:
+    """Build a compact layout for inspecting multi-camera VIO.
+
+    Args:
+        num_cameras: Number of synchronized cameras in the rig.
 
     Returns:
         The Rerun blueprint shared by interactive and validation runs.
     """
     camera_grid: rrb.Grid = rrb.Grid(
-        *[_camera_view(camera_index) for camera_index in range(4)],
+        *[_camera_view(camera_index) for camera_index in range(num_cameras)],
         grid_columns=2,
-        name="Four synchronized cameras",
+        name="Synchronized cameras",
     )
 
+    camera_contents: list[str] = [
+        path
+        for camera_index in range(num_cameras)
+        for path in (f"/world/rig_0/cam_{camera_index}", f"/world/rig_0/cam_{camera_index}/pinhole")
+    ]
     world_view: rrb.Spatial3DView = rrb.Spatial3DView(
         name="Trajectory and landmarks",
         origin="/world",
         contents=[
             "/world/rig_0",
-            "/world/rig_0/cam_0",
-            "/world/rig_0/cam_0/pinhole",
-            "/world/rig_0/cam_1",
-            "/world/rig_0/cam_1/pinhole",
-            "/world/rig_0/cam_2",
-            "/world/rig_0/cam_2/pinhole",
-            "/world/rig_0/cam_3",
-            "/world/rig_0/cam_3/pinhole",
+            *camera_contents,
             "/world/landmarks",
             "/world/runs/basalt/trajectory",
             "/world/rig_0_path",
@@ -115,7 +135,7 @@ def build_blueprint() -> rrb.Blueprint:
             name="Sensors and state",
         ),
         row_shares=[3.0, 1.0],
-        name="Basalt four-camera VIO",
+        name="Basalt VIO",
     )
 
     return rrb.Blueprint(
@@ -126,19 +146,20 @@ def build_blueprint() -> rrb.Blueprint:
     )
 
 
-def save_blueprint(output_path: Path) -> None:
+def save_blueprint(output_path: Path, num_cameras: int) -> None:
     """Write the blueprint to disk.
 
     Args:
         output_path: Destination `.rbl` path.
+        num_cameras: Number of synchronized cameras in the rig.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    build_blueprint().save(APPLICATION_ID, output_path)
+    build_blueprint(num_cameras).save(APPLICATION_ID, output_path)
 
 
 def main(args: CliArgs) -> None:
-    """Generate the blueprint at the requested path."""
-    save_blueprint(args.output)
+    """Generate the blueprint sized to the run's calibration."""
+    save_blueprint(args.output, count_cameras(args.calibration))
     print(args.output)
 
 

@@ -64,7 +64,9 @@ DatasetIoInterfacePtr DatasetIoFactory::getDatasetIo(const std::string &dataset_
 #endif
 #ifdef BASALT_ENABLE_ROBOCAP
   else if (dataset_type == "robocap") {
-    return DatasetIoInterfacePtr(new RobocapIO);
+    return DatasetIoInterfacePtr(new RobocapIO(RobocapIO::CameraSet::kCoverage));
+  } else if (dataset_type == "robocap-stereo") {
+    return DatasetIoInterfacePtr(new RobocapIO(RobocapIO::CameraSet::kStereo));
   }
 #endif
   else {

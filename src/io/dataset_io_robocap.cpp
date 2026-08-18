@@ -51,10 +51,18 @@ struct CameraSpec {
   const char* position;
 };
 
-constexpr std::array<CameraSpec, 4> kCameras = {
-    CameraSpec{4, "left"}, CameraSpec{1, "left-front"},
-    CameraSpec{5, "right-front"}, CameraSpec{3, "right"}};
-constexpr size_t kNumCameras = kCameras.size();
+const std::vector<CameraSpec>& coverage_cameras() {
+  static const std::vector<CameraSpec> cameras = {
+      CameraSpec{4, "left"}, CameraSpec{1, "left-front"},
+      CameraSpec{5, "right-front"}, CameraSpec{3, "right"}};
+  return cameras;
+}
+
+const std::vector<CameraSpec>& stereo_cameras() {
+  static const std::vector<CameraSpec> cameras = {CameraSpec{1, "left-front"},
+                                                  CameraSpec{5, "right-front"}};
+  return cameras;
+}
 
 [[noreturn]] void throw_ffmpeg_error(int code, const std::string& operation) {
   std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
@@ -97,22 +105,22 @@ struct VideoFrameReference {
   int64_t timestamp_ns = 0;
 };
 
-using Frameset = std::array<VideoFrameReference, kNumCameras>;
+using Frameset = std::vector<VideoFrameReference>;
 
 struct RawImuSample {
   int64_t timestamp_ns = 0;
   Eigen::Vector3d value = Eigen::Vector3d::Zero();
 };
 
-int camera_index_for_device(int device) {
+int camera_index_for_device(int device, const std::vector<CameraSpec>& cameras) {
   const auto iterator =
-      std::find_if(kCameras.begin(), kCameras.end(),
+      std::find_if(cameras.begin(), cameras.end(),
                    [device](const CameraSpec& camera) {
                      return camera.device == device;
                    });
-  return iterator == kCameras.end()
+  return iterator == cameras.end()
              ? -1
-             : static_cast<int>(std::distance(kCameras.begin(), iterator));
+             : static_cast<int>(std::distance(cameras.begin(), iterator));
 }
 
 int64_t absolute_difference(int64_t first, int64_t second) {
@@ -310,11 +318,11 @@ void sort_and_deduplicate(std::vector<RawImuSample>& samples) {
 
 class RobocapVioDataset final : public VioDataset {
  public:
-  RobocapVioDataset() {
+  explicit RobocapVioDataset(const std::vector<CameraSpec>& cameras) : cameras_(cameras), decoders_(cameras.size()) {
     for (std::unique_ptr<VideoDecoder>& decoder : decoders_) { decoder = std::make_unique<VideoDecoder>(); }
   }
 
-  size_t get_num_cams() const override { return kNumCameras; }
+  size_t get_num_cams() const override { return cameras_.size(); }
   std::vector<int64_t>& get_image_timestamps() override { return image_timestamps_; }
   const Eigen::aligned_vector<AccelData>& get_accel_data() const override { return accel_data_; }
   const Eigen::aligned_vector<GyroData>& get_gyro_data() const override { return gyro_data_; }
@@ -325,15 +333,15 @@ class RobocapVioDataset final : public VioDataset {
   std::vector<ImageData> get_image_data(int64_t timestamp_ns) override {
     const auto iterator = framesets_.find(timestamp_ns);
     if (iterator == framesets_.end()) { return {}; }
-    std::vector<ImageData> images(kNumCameras);
-    for (size_t camera = 0; camera < kNumCameras; ++camera) {
+    std::vector<ImageData> images(cameras_.size());
+    for (size_t camera = 0; camera < cameras_.size(); ++camera) {
       images[camera].img = decoders_[camera]->decode(iterator->second[camera]);
     }
     return images;
   }
 
   void load(const fs::path& path) {
-    std::array<std::vector<VideoFrameReference>, kNumCameras> camera_frames;
+    std::vector<std::vector<VideoFrameReference>> camera_frames(cameras_.size());
     std::vector<fs::path> imu_databases;
     const std::regex video_pattern(R"(video_dev([0-9]+)_session[0-9]+_segment[0-9]+_([^.]+)\.mp4)");
     const std::regex imu_pattern(R"(IMUWriter_dev0_session[0-9]+_segment[0-9]+\.db)");
@@ -345,9 +353,9 @@ class RobocapVioDataset final : public VioDataset {
       std::smatch match;
       if (std::regex_match(filename, match, video_pattern)) {
         const int device = std::stoi(match[1].str());
-        const int camera = camera_index_for_device(device);
+        const int camera = camera_index_for_device(device, cameras_);
         if (camera < 0) { continue; }
-        if (match[2].str() != kCameras[static_cast<size_t>(camera)].position) {
+        if (match[2].str() != cameras_[static_cast<size_t>(camera)].position) {
           throw std::runtime_error("Unexpected RoboCap camera position in " + filename);
         }
         std::vector<VideoFrameReference> indexed = index_video(entry.path());
@@ -359,10 +367,10 @@ class RobocapVioDataset final : public VioDataset {
         imu_databases.push_back(entry.path());
       }
     }
-    for (size_t camera = 0; camera < kNumCameras; ++camera) {
+    for (size_t camera = 0; camera < cameras_.size(); ++camera) {
       if (camera_frames[camera].empty()) {
-        throw std::runtime_error("Missing RoboCap coverage camera " +
-                                 std::string(kCameras[camera].position));
+        throw std::runtime_error("Missing RoboCap camera " +
+                                 std::string(cameras_[camera].position));
       }
       std::sort(camera_frames[camera].begin(), camera_frames[camera].end(),
                 [](const VideoFrameReference& first, const VideoFrameReference& second) {
@@ -374,27 +382,28 @@ class RobocapVioDataset final : public VioDataset {
   }
 
  private:
-  void build_framesets(const std::array<std::vector<VideoFrameReference>, kNumCameras>& camera_frames) {
+  void build_framesets(const std::vector<std::vector<VideoFrameReference>>& camera_frames) {
+    const size_t num_cameras = cameras_.size();
     int64_t overlap_start = camera_frames[0].front().timestamp_ns;
     int64_t overlap_end = camera_frames[0].back().timestamp_ns;
-    for (size_t camera = 1; camera < kNumCameras; ++camera) {
+    for (size_t camera = 1; camera < num_cameras; ++camera) {
       overlap_start =
           std::max(overlap_start, camera_frames[camera].front().timestamp_ns);
       overlap_end =
           std::min(overlap_end, camera_frames[camera].back().timestamp_ns);
     }
-    std::array<size_t, kNumCameras> cursors{};
+    std::vector<size_t> cursors(num_cameras, 0);
     size_t interior_anchors = 0;
     size_t interior_drops = 0;
     int64_t maximum_skew_ns = 0;
 
     for (const VideoFrameReference& anchor : camera_frames[0]) {
       if (anchor.timestamp_ns >= overlap_start && anchor.timestamp_ns <= overlap_end) { ++interior_anchors; }
-      Frameset frameset;
+      Frameset frameset(num_cameras);
       frameset[0] = anchor;
-      std::array<size_t, kNumCameras> selected = cursors;
+      std::vector<size_t> selected = cursors;
       bool complete = true;
-      for (size_t camera = 1; camera < kNumCameras; ++camera) {
+      for (size_t camera = 1; camera < num_cameras; ++camera) {
         size_t index = cursors[camera];
         const std::vector<VideoFrameReference>& frames = camera_frames[camera];
         if (index >= frames.size()) {
@@ -418,13 +427,17 @@ class RobocapVioDataset final : public VioDataset {
         if (anchor.timestamp_ns >= overlap_start && anchor.timestamp_ns <= overlap_end) { ++interior_drops; }
         continue;
       }
-      for (size_t camera = 1; camera < kNumCameras; ++camera) { cursors[camera] = selected[camera] + 1; }
+      for (size_t camera = 1; camera < num_cameras; ++camera) { cursors[camera] = selected[camera] + 1; }
 
-      std::array<int64_t, kNumCameras> source_timestamps{};
-      for (size_t camera = 0; camera < kNumCameras; ++camera) { source_timestamps[camera] = frameset[camera].timestamp_ns; }
+      std::vector<int64_t> source_timestamps(num_cameras);
+      for (size_t camera = 0; camera < num_cameras; ++camera) { source_timestamps[camera] = frameset[camera].timestamp_ns; }
       std::sort(source_timestamps.begin(), source_timestamps.end());
       maximum_skew_ns = std::max(maximum_skew_ns, source_timestamps.back() - source_timestamps.front());
-      const int64_t median_timestamp_ns = source_timestamps[1] + (source_timestamps[2] - source_timestamps[1]) / 2;
+      const size_t middle = num_cameras / 2;
+      const int64_t median_timestamp_ns =
+          num_cameras % 2 == 1
+              ? source_timestamps[middle]
+              : source_timestamps[middle - 1] + (source_timestamps[middle] - source_timestamps[middle - 1]) / 2;
       const int64_t timestamp_ns = median_timestamp_ns + kCameraToImuOffsetNs;
       if (!image_timestamps_.empty() && timestamp_ns <= image_timestamps_.back()) {
         throw std::runtime_error("RoboCap frameset timestamps are not strictly increasing");
@@ -477,19 +490,23 @@ class RobocapVioDataset final : public VioDataset {
     std::cout << "RoboCap: " << gyro_data_.size() << " paired middle-IMU samples" << std::endl;
   }
 
+  std::vector<CameraSpec> cameras_;
   std::vector<int64_t> image_timestamps_;
   std::map<int64_t, Frameset> framesets_;
   Eigen::aligned_vector<AccelData> accel_data_;
   Eigen::aligned_vector<GyroData> gyro_data_;
   std::vector<int64_t> gt_timestamps_;
   Eigen::aligned_vector<Sophus::SE3d> gt_pose_data_;
-  std::array<std::unique_ptr<VideoDecoder>, kNumCameras> decoders_;
+  std::vector<std::unique_ptr<VideoDecoder>> decoders_;
 };
 
 }  // namespace
 
+RobocapIO::RobocapIO(CameraSet camera_set) : camera_set_(camera_set) {}
+
 void RobocapIO::read(const std::string& path) {
-  auto data = std::make_shared<RobocapVioDataset>();
+  auto data = std::make_shared<RobocapVioDataset>(camera_set_ == CameraSet::kStereo ? stereo_cameras()
+                                                                                    : coverage_cameras());
   data->load(path);
   data_ = std::move(data);
 }

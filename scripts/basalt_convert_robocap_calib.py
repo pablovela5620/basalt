@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Convert RoboCap factory Kalibr files to a Basalt four-camera calibration."""
+"""Convert RoboCap factory Kalibr files to Basalt calibrations.
+
+One run writes two Basalt cereal JSON files: the four-camera coverage
+calibration at ``--output``, and the two-camera front-stereo calibration
+beside it (``<stem>-stereo.json`` unless ``--stereo-output`` overrides it).
+"""
 
 import json
 import math
@@ -19,7 +24,9 @@ class CliArgs:
     factory_calibration: Path
     """Directory containing the unmodified RoboCap factory calibration."""
     output: Path
-    """Destination Basalt cereal JSON file."""
+    """Destination Basalt cereal JSON file for the four coverage cameras."""
+    stereo_output: Path | None = None
+    """Destination for the front-stereo pair; defaults to `<output stem>-stereo.json`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,11 +39,16 @@ class CameraSource:
     """Camera key inside the Kalibr YAML document."""
 
 
-CAMERA_SOURCES: tuple[CameraSource, ...] = (
+_FRONT_CAMCHAIN: Path = Path("imus_cam_lr_front_extrinsic/imus_cam_lr_front_extrinsic-camchain-imucam.yaml")
+COVERAGE_CAMERA_SOURCES: tuple[CameraSource, ...] = (
     CameraSource(Path("imus_cam_l_extrinsic/imus_cam_l_extrinsic-camchain-imucam.yaml"), "cam0"),
-    CameraSource(Path("imus_cam_lr_front_extrinsic/imus_cam_lr_front_extrinsic-camchain-imucam.yaml"), "cam0"),
-    CameraSource(Path("imus_cam_lr_front_extrinsic/imus_cam_lr_front_extrinsic-camchain-imucam.yaml"), "cam1"),
+    CameraSource(_FRONT_CAMCHAIN, "cam0"),
+    CameraSource(_FRONT_CAMCHAIN, "cam1"),
     CameraSource(Path("imus_cam_r_extrinsic/imus_cam_r_extrinsic-camchain-imucam.yaml"), "cam0"),
+)
+STEREO_CAMERA_SOURCES: tuple[CameraSource, ...] = (
+    CameraSource(_FRONT_CAMCHAIN, "cam0"),
+    CameraSource(_FRONT_CAMCHAIN, "cam1"),
 )
 IMU_RELATIVE_PATH: Path = Path("imus_intrinsic/imu_mid_0.yaml")
 
@@ -141,12 +153,12 @@ def _camera_calibration(factory_calibration: Path, source: CameraSource) -> tupl
     return _invert_kalibr_transform(matrix), basalt_intrinsics, resolution
 
 
-def convert(factory_calibration: Path) -> dict[str, object]:
+def convert(factory_calibration: Path, camera_sources: tuple[CameraSource, ...] = COVERAGE_CAMERA_SOURCES) -> dict[str, object]:
     """Convert a RoboCap factory directory into Basalt cereal JSON data."""
     transforms: list[dict[str, float]] = []
     intrinsics: list[dict[str, object]] = []
     resolutions: list[list[int]] = []
-    for source in CAMERA_SOURCES:
+    for source in camera_sources:
         camera_result: tuple[dict[str, float], dict[str, object], list[int]] = _camera_calibration(factory_calibration, source)
         transforms.append(camera_result[0])
         intrinsics.append(camera_result[1])
@@ -175,11 +187,17 @@ def convert(factory_calibration: Path) -> dict[str, object]:
 
 
 def main(args: CliArgs) -> None:
-    """Write one converted Basalt calibration file."""
-    document: dict[str, object] = convert(args.factory_calibration)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(document, indent=4) + "\n", encoding="utf-8")
-    print(args.output)
+    """Write the coverage and front-stereo Basalt calibration files."""
+    stereo_output: Path = (
+        args.stereo_output
+        if args.stereo_output is not None
+        else args.output.with_name(f"{args.output.stem}-stereo{args.output.suffix}")
+    )
+    for output_path, camera_sources in ((args.output, COVERAGE_CAMERA_SOURCES), (stereo_output, STEREO_CAMERA_SOURCES)):
+        document: dict[str, object] = convert(args.factory_calibration, camera_sources)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(document, indent=4) + "\n", encoding="utf-8")
+        print(output_path)
 
 
 if __name__ == "__main__":

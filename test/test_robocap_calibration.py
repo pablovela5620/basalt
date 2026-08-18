@@ -113,6 +113,26 @@ class RobocapCalibrationConverterTest(unittest.TestCase):
             self.assertEqual(calibration["gyro_bias_std"], [0.00003] * 3)
             self.assertEqual(calibration["cam_time_offset_ns"], 0)
 
+            stereo_path: Path = root / "robocap-basalt-calib-stereo.json"
+            self.assertTrue(stereo_path.is_file(), msg="stereo calibration must be written beside the coverage one")
+            stereo_document: dict[str, object] = json.loads(stereo_path.read_text(encoding="utf-8"))
+            stereo: dict[str, object] = stereo_document["value0"]  # type: ignore[assignment]
+
+            stereo_intrinsics: list[dict[str, object]] = stereo["intrinsics"]  # type: ignore[assignment]
+            self.assertEqual(
+                [item["intrinsics"]["fx"] for item in stereo_intrinsics],  # type: ignore[index]
+                [201.0, 301.0],
+                msg="stereo order must be left-front then right-front",
+            )
+
+            stereo_transforms: list[dict[str, float]] = stereo["T_imu_cam"]  # type: ignore[assignment]
+            self.assertEqual(
+                [[item["px"], item["py"], item["pz"]] for item in stereo_transforms],
+                [[0.0, -2.0, 0.0], [0.0, 0.0, -3.0]],
+            )
+            self.assertEqual(stereo["resolution"], [[1920, 1080]] * 2)
+            self.assertEqual(stereo["imu_update_rate"], 200.0)
+
 
 if __name__ == "__main__":
     unittest.main()

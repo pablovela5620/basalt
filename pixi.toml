@@ -97,8 +97,8 @@ build = { cmd = "cmake --build build --target basalt_vio -j", depends-on = ["_co
 # Everything (lib + all executables): `pixi run _build-all`.
 _build-all = { cmd = "cmake --build build -j", depends-on = ["_configure"] }
 
-# Shared Rerun layout for any four-camera basalt_vio recording.
-_blueprint = { cmd = "python scripts/rerun/basalt_vio_blueprint.py --output {{ output }}", args = ["output"] }
+# Shared Rerun layout for any basalt_vio recording; camera views match the calibration.
+_blueprint = { cmd = "python scripts/rerun/basalt_vio_blueprint.py --output {{ output }} --calibration {{ calibration }}", args = ["output", "calibration"] }
 
 # --- Monado SLAM demo (EuRoC layout, downloaded from collabora/monado-slam-datasets) ---
 _msd-download = { cmd = "hf download collabora/monado-slam-datasets M_monado_datasets/{{ group }}/{{ subgroup }}/{{ name }}.zip M_monado_datasets/{{ group }}/extras/calibration.kb4.json --repo-type dataset --local-dir datasets/monado-slam-datasets", args = ["name", "group", "subgroup"] }
@@ -114,23 +114,33 @@ args = [
 cmd = "rerun --new datasets/{{ name }}/basalt_vio.rrd datasets/{{ name }}/basalt_vio.rbl"
 depends-on = [
   { task = "_msd-vio", args = ["{{ name }}", "{{ group }}", "{{ subgroup }}"] },
-  { task = "_blueprint", args = ["datasets/{{ name }}/basalt_vio.rbl"] },
+  { task = "_blueprint", args = [
+    "datasets/{{ name }}/basalt_vio.rbl",
+    "datasets/monado-slam-datasets/M_monado_datasets/{{ group }}/extras/calibration.kb4.json",
+  ] },
 ]
 
 [tasks._robocap-download]
-# Session 15 + converted calibration only (the repo also holds session 14 and raw kalibr files).
-cmd = "hf download pablovela5620/robocap-example f408193e6447b3b0_session_15/ 0factory-calibration-f408193e6447b3b0/robocap-basalt-calib.json --repo-type dataset --local-dir datasets/robocap-example"
+# Session 15 + converted calibrations only (the repo also holds session 14 and raw kalibr files).
+cmd = "hf download pablovela5620/robocap-example f408193e6447b3b0_session_15/ 0factory-calibration-f408193e6447b3b0/robocap-basalt-calib.json 0factory-calibration-f408193e6447b3b0/robocap-basalt-calib-stereo.json --repo-type dataset --local-dir datasets/robocap-example"
 
 [tasks._robocap-vio]
-cmd = "./build/basalt_vio --show-gui 0 --dataset-type robocap --dataset-path datasets/robocap-example/f408193e6447b3b0_session_15 --cam-calib datasets/robocap-example/0factory-calibration-f408193e6447b3b0/robocap-basalt-calib.json --config-path data/msd/msdmo_config.json --deterministic 1 --rerun-rrd datasets/robocap_session_15.rrd --save-trajectory tum --save-trajectory-fn datasets/robocap_session_15_trajectory.txt"
+# variant "coverage" = all four cameras; "stereo" = the front pair only.
+args = [{ arg = "variant", default = "coverage" }]
+cmd = './build/basalt_vio --show-gui 0 --dataset-type robocap{{ "-stereo" if variant == "stereo" else "" }} --dataset-path datasets/robocap-example/f408193e6447b3b0_session_15 --cam-calib datasets/robocap-example/0factory-calibration-f408193e6447b3b0/robocap-basalt-calib{{ "-stereo" if variant == "stereo" else "" }}.json --config-path data/msd/msdmo_config.json --deterministic 1 --rerun-rrd datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}.rrd --save-trajectory tum --save-trajectory-fn datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}_trajectory.txt'
 depends-on = ["build", "_robocap-download"]
 
 [tasks.robocap]
 # The one-command RoboCap demo: build + download + VIO + Rerun viewer.
-cmd = "rerun --new datasets/robocap_session_15.rrd datasets/robocap_session_15.rbl"
+# `pixi run robocap` = four coverage cameras; `pixi run robocap stereo` = front pair.
+args = [{ arg = "variant", default = "coverage" }]
+cmd = 'rerun --new datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}.rrd datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}.rbl'
 depends-on = [
-  "_robocap-vio",
-  { task = "_blueprint", args = ["datasets/robocap_session_15.rbl"] },
+  { task = "_robocap-vio", args = ["{{ variant }}"] },
+  { task = "_blueprint", args = [
+    'datasets/robocap_session_15{{ "_stereo" if variant == "stereo" else "" }}.rbl',
+    'datasets/robocap-example/0factory-calibration-f408193e6447b3b0/robocap-basalt-calib{{ "-stereo" if variant == "stereo" else "" }}.json',
+  ] },
 ]
 
 [tasks.robocap-calib]

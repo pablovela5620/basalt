@@ -16,7 +16,9 @@ clock; accelerometer samples are linearly interpolated onto it. The loader adds
 the measured 14,902,432 ns camera-to-IMU shift, so generated Basalt calibration
 files store `cam_time_offset_ns = 0`.
 
-Convert the factory Kalibr calibration:
+Convert the factory Kalibr calibration. One run writes the four-camera
+coverage file at `--output` and the front-stereo pair beside it
+(`robocap-basalt-calib-stereo.json`):
 
 ```sh
 pixi run robocap-calib -- \
@@ -24,7 +26,8 @@ pixi run robocap-calib -- \
   --output /path/to/robocap-basalt-calib.json
 ```
 
-Run four-camera VIO and save a Rerun recording:
+Run four-camera VIO and save a Rerun recording (for the front stereo pair,
+use `--dataset-type robocap-stereo` with the `-stereo` calibration):
 
 ```sh
 pixi run ./build/basalt_vio \

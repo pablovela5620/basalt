@@ -156,4 +156,38 @@ TEST(RobocapDatasetIo, ReadsCoverageCamerasAndPairedImuThroughPublicInterface) {
   EXPECT_NEAR(accel[0].data.z(), 3020.0 * kAccelScale, 1e-12);
 }
 
+TEST(RobocapDatasetIo, StereoVariantSelectsFrontPairInOrder) {
+  TemporaryRobocapSession session;
+
+  basalt::DatasetIoInterfacePtr coverage_io = basalt::DatasetIoFactory::getDatasetIo("robocap");
+  coverage_io->read(session.path().string());
+  basalt::VioDatasetPtr coverage = coverage_io->get_data();
+  ASSERT_NE(coverage, nullptr);
+
+  basalt::DatasetIoInterfacePtr stereo_io = basalt::DatasetIoFactory::getDatasetIo("robocap-stereo");
+  stereo_io->read(session.path().string());
+  basalt::VioDatasetPtr stereo = stereo_io->get_data();
+  ASSERT_NE(stereo, nullptr);
+
+  EXPECT_EQ(stereo->get_num_cams(), 2);
+  const std::vector<int64_t>& stereo_timestamps = stereo->get_image_timestamps();
+  ASSERT_EQ(stereo_timestamps.size(), 6);
+  EXPECT_EQ(stereo_timestamps.front(), kFirstFrameTimestampNs);
+
+  const std::vector<basalt::ImageData> coverage_images = coverage->get_image_data(coverage->get_image_timestamps().front());
+  const std::vector<basalt::ImageData> stereo_images = stereo->get_image_data(stereo_timestamps.front());
+  ASSERT_EQ(coverage_images.size(), 4);
+  ASSERT_EQ(stereo_images.size(), 2);
+  for (const basalt::ImageData& image : stereo_images) {
+    ASSERT_NE(image.img, nullptr);
+    EXPECT_EQ(image.img->w, 16);
+    EXPECT_EQ(image.img->h, 16);
+  }
+  // The stereo pair must be the coverage rig's left-front and right-front
+  // cameras, in that order (fixture colors: 0x404040 and 0x808080).
+  EXPECT_EQ(stereo_images[0].img->ptr[0], coverage_images[1].img->ptr[0]);
+  EXPECT_EQ(stereo_images[1].img->ptr[0], coverage_images[2].img->ptr[0]);
+  EXPECT_LT(stereo_images[0].img->ptr[0], stereo_images[1].img->ptr[0]);
+}
+
 }  // namespace

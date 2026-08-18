@@ -58,6 +58,7 @@ The other visible tasks (`pixi task list` shows them; `_`-prefixed helpers are
 chained intermediaries):
 
 ```bash
+pixi run robocap stereo        # the same demo using only the front stereo pair
 pixi run build                 # fetch submodules, configure, compile basalt_vio
 pixi run msd                   # same demo on a Monado SLAM dataset (default MGO09)
 pixi run msd MOO09_short_1_updown MO_odyssey_plus MOO_others   # any MSD sequence
