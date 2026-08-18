@@ -176,6 +176,8 @@ std::vector<VideoFrameReference> index_video(const fs::path& path) {
 
 class VideoDecoder {
  public:
+  explicit VideoDecoder(int downscale) : downscale_(downscale > 0 ? downscale : 1) {}
+
   ~VideoDecoder() {
     if (scale_context_ != nullptr) { sws_freeContext(scale_context_); }
   }
@@ -245,18 +247,23 @@ class VideoDecoder {
   }
 
   std::shared_ptr<ManagedImage<uint16_t>> convert_frame(const AVFrame* frame) {
+    const int target_width = std::max(frame->width / downscale_, 1);
+    const int target_height = std::max(frame->height / downscale_, 1);
+    // SWS_AREA box-averages when shrinking; SWS_POINT keeps the 1:1 grayscale
+    // conversion bit-identical to the pre-downscale reader.
+    const int flags = downscale_ > 1 ? SWS_AREA : SWS_POINT;
     scale_context_ = sws_getCachedContext(scale_context_, frame->width, frame->height,
-                                          static_cast<AVPixelFormat>(frame->format), frame->width, frame->height,
-                                          AV_PIX_FMT_GRAY8, SWS_POINT, nullptr, nullptr, nullptr);
+                                          static_cast<AVPixelFormat>(frame->format), target_width, target_height,
+                                          AV_PIX_FMT_GRAY8, flags, nullptr, nullptr, nullptr);
     if (scale_context_ == nullptr) { throw std::runtime_error("Create grayscale conversion context"); }
-    gray_.resize(static_cast<size_t>(frame->width) * frame->height);
+    gray_.resize(static_cast<size_t>(target_width) * target_height);
     std::array<uint8_t*, 4> destination_data = {gray_.data(), nullptr,
                                                 nullptr, nullptr};
-    std::array<int, 4> destination_linesize = {frame->width, 0, 0, 0};
+    std::array<int, 4> destination_linesize = {target_width, 0, 0, 0};
     const int rows = sws_scale(scale_context_, frame->data, frame->linesize, 0, frame->height,
                                destination_data.data(), destination_linesize.data());
-    if (rows != frame->height) { throw std::runtime_error("Convert complete video frame to grayscale"); }
-    auto image = std::make_shared<ManagedImage<uint16_t>>(frame->width, frame->height);
+    if (rows != target_height) { throw std::runtime_error("Convert complete video frame to grayscale"); }
+    auto image = std::make_shared<ManagedImage<uint16_t>>(target_width, target_height);
     for (size_t index = 0; index < gray_.size(); ++index) {
       image->ptr[index] = static_cast<uint16_t>(gray_[index]) << 8;
     }
@@ -264,6 +271,7 @@ class VideoDecoder {
   }
 
   fs::path path_;
+  int downscale_ = 1;
   int stream_index_ = -1;
   int64_t last_pts_ = std::numeric_limits<int64_t>::min();
   FormatContextPtr format_context_;
@@ -318,8 +326,9 @@ void sort_and_deduplicate(std::vector<RawImuSample>& samples) {
 
 class RobocapVioDataset final : public VioDataset {
  public:
-  explicit RobocapVioDataset(const std::vector<CameraSpec>& cameras) : cameras_(cameras), decoders_(cameras.size()) {
-    for (std::unique_ptr<VideoDecoder>& decoder : decoders_) { decoder = std::make_unique<VideoDecoder>(); }
+  RobocapVioDataset(const std::vector<CameraSpec>& cameras, int downscale)
+      : cameras_(cameras), decoders_(cameras.size()) {
+    for (std::unique_ptr<VideoDecoder>& decoder : decoders_) { decoder = std::make_unique<VideoDecoder>(downscale); }
   }
 
   size_t get_num_cams() const override { return cameras_.size(); }
@@ -502,11 +511,11 @@ class RobocapVioDataset final : public VioDataset {
 
 }  // namespace
 
-RobocapIO::RobocapIO(CameraSet camera_set) : camera_set_(camera_set) {}
+RobocapIO::RobocapIO(CameraSet camera_set, int downscale) : camera_set_(camera_set), downscale_(downscale) {}
 
 void RobocapIO::read(const std::string& path) {
-  auto data = std::make_shared<RobocapVioDataset>(camera_set_ == CameraSet::kStereo ? stereo_cameras()
-                                                                                    : coverage_cameras());
+  auto data = std::make_shared<RobocapVioDataset>(
+      camera_set_ == CameraSet::kStereo ? stereo_cameras() : coverage_cameras(), downscale_);
   data->load(path);
   data_ = std::move(data);
 }

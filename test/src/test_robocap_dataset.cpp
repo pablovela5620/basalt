@@ -9,6 +9,7 @@ All rights reserved.
 */
 
 #include <basalt/io/dataset_io.h>
+#include <basalt/io/dataset_io_robocap.h>
 
 #include <gtest/gtest.h>
 #include <sqlite3.h>
@@ -121,13 +122,14 @@ TEST(RobocapDatasetIo, ReadsCoverageCamerasAndPairedImuThroughPublicInterface) {
   EXPECT_LT(image_timestamps[0], image_timestamps[1]);
   EXPECT_LT(image_timestamps[1], image_timestamps[2]);
 
+  // The factory's robocap types downscale 2x for VIO throughput (16 -> 8).
   const std::vector<basalt::ImageData> images = dataset->get_image_data(image_timestamps.front());
   ASSERT_EQ(images.size(), 4);
   std::vector<uint16_t> first_pixels;
   for (const basalt::ImageData& image : images) {
     ASSERT_NE(image.img, nullptr);
-    EXPECT_EQ(image.img->w, 16);
-    EXPECT_EQ(image.img->h, 16);
+    EXPECT_EQ(image.img->w, 8);
+    EXPECT_EQ(image.img->h, 8);
     first_pixels.push_back(image.img->ptr[0]);
   }
   EXPECT_LT(first_pixels[0], first_pixels[1]);
@@ -139,8 +141,8 @@ TEST(RobocapDatasetIo, ReadsCoverageCamerasAndPairedImuThroughPublicInterface) {
   ASSERT_EQ(last_images.size(), 4);
   for (const basalt::ImageData& image : last_images) {
     ASSERT_NE(image.img, nullptr);
-    EXPECT_EQ(image.img->w, 16);
-    EXPECT_EQ(image.img->h, 16);
+    EXPECT_EQ(image.img->w, 8);
+    EXPECT_EQ(image.img->h, 8);
   }
 
   const Eigen::aligned_vector<basalt::GyroData>& gyro = dataset->get_gyro_data();
@@ -180,14 +182,30 @@ TEST(RobocapDatasetIo, StereoVariantSelectsFrontPairInOrder) {
   ASSERT_EQ(stereo_images.size(), 2);
   for (const basalt::ImageData& image : stereo_images) {
     ASSERT_NE(image.img, nullptr);
-    EXPECT_EQ(image.img->w, 16);
-    EXPECT_EQ(image.img->h, 16);
+    EXPECT_EQ(image.img->w, 8);
+    EXPECT_EQ(image.img->h, 8);
   }
   // The stereo pair must be the coverage rig's left-front and right-front
   // cameras, in that order (fixture colors: 0x404040 and 0x808080).
   EXPECT_EQ(stereo_images[0].img->ptr[0], coverage_images[1].img->ptr[0]);
   EXPECT_EQ(stereo_images[1].img->ptr[0], coverage_images[2].img->ptr[0]);
   EXPECT_LT(stereo_images[0].img->ptr[0], stereo_images[1].img->ptr[0]);
+}
+
+TEST(RobocapDatasetIo, UnitDownscaleKeepsNativeResolution) {
+  TemporaryRobocapSession session;
+  basalt::DatasetIoInterfacePtr native_io(new basalt::RobocapIO(basalt::RobocapIO::CameraSet::kCoverage, 1));
+  native_io->read(session.path().string());
+  basalt::VioDatasetPtr dataset = native_io->get_data();
+  ASSERT_NE(dataset, nullptr);
+
+  const std::vector<basalt::ImageData> images = dataset->get_image_data(dataset->get_image_timestamps().front());
+  ASSERT_EQ(images.size(), 4);
+  for (const basalt::ImageData& image : images) {
+    ASSERT_NE(image.img, nullptr);
+    EXPECT_EQ(image.img->w, 16);
+    EXPECT_EQ(image.img->h, 16);
+  }
 }
 
 }  // namespace

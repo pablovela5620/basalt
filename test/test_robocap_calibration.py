@@ -96,8 +96,13 @@ class RobocapCalibrationConverterTest(unittest.TestCase):
             document: dict[str, object] = json.loads(output_path.read_text(encoding="utf-8"))
             calibration: dict[str, object] = document["value0"]  # type: ignore[assignment]
 
+            # Default downscale 2 halves focal lengths and shifts the principal
+            # point with the pixel-center convention: c' = (c + 0.5)/2 - 0.5.
             intrinsics: list[dict[str, object]] = calibration["intrinsics"]  # type: ignore[assignment]
-            self.assertEqual([item["intrinsics"]["fx"] for item in intrinsics], [101.0, 201.0, 301.0, 401.0])  # type: ignore[index]
+            self.assertEqual([item["intrinsics"]["fx"] for item in intrinsics], [50.5, 100.5, 150.5, 200.5])  # type: ignore[index]
+            self.assertEqual([item["intrinsics"]["fy"] for item in intrinsics], [51.0, 101.0, 151.0, 201.0])  # type: ignore[index]
+            self.assertEqual([item["intrinsics"]["cx"] for item in intrinsics], [51.25, 101.25, 151.25, 201.25])  # type: ignore[index]
+            self.assertEqual([item["intrinsics"]["cy"] for item in intrinsics], [51.75, 101.75, 151.75, 201.75])  # type: ignore[index]
             self.assertTrue(all(item["camera_type"] == "kb4" for item in intrinsics))
 
             transforms: list[dict[str, float]] = calibration["T_imu_cam"]  # type: ignore[assignment]
@@ -105,7 +110,7 @@ class RobocapCalibrationConverterTest(unittest.TestCase):
                 [[item["px"], item["py"], item["pz"]] for item in transforms],
                 [[-1.0, 0.0, 0.0], [0.0, -2.0, 0.0], [0.0, 0.0, -3.0], [-4.0, 0.0, 0.0]],
             )
-            self.assertEqual(calibration["resolution"], [[1920, 1080]] * 4)
+            self.assertEqual(calibration["resolution"], [[960, 540]] * 4)
             self.assertEqual(calibration["imu_update_rate"], 200.0)
             self.assertEqual(calibration["accel_noise_std"], [0.006] * 3)
             self.assertEqual(calibration["gyro_noise_std"], [0.0007] * 3)
@@ -121,7 +126,7 @@ class RobocapCalibrationConverterTest(unittest.TestCase):
             stereo_intrinsics: list[dict[str, object]] = stereo["intrinsics"]  # type: ignore[assignment]
             self.assertEqual(
                 [item["intrinsics"]["fx"] for item in stereo_intrinsics],  # type: ignore[index]
-                [201.0, 301.0],
+                [100.5, 150.5],
                 msg="stereo order must be left-front then right-front",
             )
 
@@ -130,8 +135,31 @@ class RobocapCalibrationConverterTest(unittest.TestCase):
                 [[item["px"], item["py"], item["pz"]] for item in stereo_transforms],
                 [[0.0, -2.0, 0.0], [0.0, 0.0, -3.0]],
             )
-            self.assertEqual(stereo["resolution"], [[1920, 1080]] * 2)
+            self.assertEqual(stereo["resolution"], [[960, 540]] * 2)
             self.assertEqual(stereo["imu_update_rate"], 200.0)
+
+            unit_output: Path = root / "native.json"
+            unit_result: subprocess.CompletedProcess[str] = subprocess.run(
+                [
+                    sys.executable,
+                    str(CONVERTER),
+                    "--factory-calibration",
+                    str(root),
+                    "--output",
+                    str(unit_output),
+                    "--downscale",
+                    "1",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(unit_result.returncode, 0, msg=unit_result.stderr)
+            native: dict[str, object] = json.loads(unit_output.read_text(encoding="utf-8"))["value0"]
+            native_intrinsics: list[dict[str, object]] = native["intrinsics"]  # type: ignore[assignment]
+            self.assertEqual([item["intrinsics"]["fx"] for item in native_intrinsics], [101.0, 201.0, 301.0, 401.0])  # type: ignore[index]
+            self.assertEqual([item["intrinsics"]["cx"] for item in native_intrinsics], [103.0, 203.0, 303.0, 403.0])  # type: ignore[index]
+            self.assertEqual(native["resolution"], [[1920, 1080]] * 4)
 
 
 if __name__ == "__main__":

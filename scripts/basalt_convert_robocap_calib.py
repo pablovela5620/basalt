@@ -27,6 +27,9 @@ class CliArgs:
     """Destination Basalt cereal JSON file for the four coverage cameras."""
     stereo_output: Path | None = None
     """Destination for the front-stereo pair; defaults to `<output stem>-stereo.json`."""
+    downscale: int = 2
+    """Integer factor the RoboCap reader downscales frames by; intrinsics and
+    resolution are scaled to match (1 keeps the native calibration)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,21 +132,32 @@ def _invert_kalibr_transform(matrix: list[list[float]]) -> dict[str, float]:
     }
 
 
-def _camera_calibration(factory_calibration: Path, source: CameraSource) -> tuple[dict[str, float], dict[str, object], list[int]]:
-    """Convert one fixed RoboCap camera from Kalibr to Basalt fields."""
+def _camera_calibration(
+    factory_calibration: Path, source: CameraSource, downscale: int = 1
+) -> tuple[dict[str, float], dict[str, object], list[int]]:
+    """Convert one fixed RoboCap camera from Kalibr to Basalt fields.
+
+    Args:
+        factory_calibration: Directory holding the Kalibr factory calibration.
+        source: Camera-chain file and camera key to convert.
+        downscale: Integer factor the reader shrinks frames by. Focal lengths
+            divide by it; the principal point follows the pixel-center
+            convention ``c' = (c + 0.5)/downscale - 0.5``. The kb4 distortion
+            coefficients are resolution-invariant.
+    """
     document: dict[str, Any] = _load_yaml(factory_calibration / source.relative_path)
     camera: dict[str, Any] = document[source.camera_key]
     matrix: list[list[float]] = camera["T_cam_imu"]
     intrinsics: list[float] = [float(value) for value in camera["intrinsics"]]
     distortion: list[float] = [float(value) for value in camera["distortion_coeffs"]]
-    resolution: list[int] = [int(value) for value in camera["resolution"]]
+    resolution: list[int] = [int(value) // downscale for value in camera["resolution"]]
     basalt_intrinsics: dict[str, object] = {
         "camera_type": "kb4",
         "intrinsics": {
-            "fx": intrinsics[0],
-            "fy": intrinsics[1],
-            "cx": intrinsics[2],
-            "cy": intrinsics[3],
+            "fx": intrinsics[0] / downscale,
+            "fy": intrinsics[1] / downscale,
+            "cx": (intrinsics[2] + 0.5) / downscale - 0.5,
+            "cy": (intrinsics[3] + 0.5) / downscale - 0.5,
             "k1": distortion[0],
             "k2": distortion[1],
             "k3": distortion[2],
@@ -153,13 +167,19 @@ def _camera_calibration(factory_calibration: Path, source: CameraSource) -> tupl
     return _invert_kalibr_transform(matrix), basalt_intrinsics, resolution
 
 
-def convert(factory_calibration: Path, camera_sources: tuple[CameraSource, ...] = COVERAGE_CAMERA_SOURCES) -> dict[str, object]:
+def convert(
+    factory_calibration: Path,
+    camera_sources: tuple[CameraSource, ...] = COVERAGE_CAMERA_SOURCES,
+    downscale: int = 1,
+) -> dict[str, object]:
     """Convert a RoboCap factory directory into Basalt cereal JSON data."""
     transforms: list[dict[str, float]] = []
     intrinsics: list[dict[str, object]] = []
     resolutions: list[list[int]] = []
     for source in camera_sources:
-        camera_result: tuple[dict[str, float], dict[str, object], list[int]] = _camera_calibration(factory_calibration, source)
+        camera_result: tuple[dict[str, float], dict[str, object], list[int]] = _camera_calibration(
+            factory_calibration, source, downscale
+        )
         transforms.append(camera_result[0])
         intrinsics.append(camera_result[1])
         resolutions.append(camera_result[2])
@@ -194,7 +214,7 @@ def main(args: CliArgs) -> None:
         else args.output.with_name(f"{args.output.stem}-stereo{args.output.suffix}")
     )
     for output_path, camera_sources in ((args.output, COVERAGE_CAMERA_SOURCES), (stereo_output, STEREO_CAMERA_SOURCES)):
-        document: dict[str, object] = convert(args.factory_calibration, camera_sources)
+        document: dict[str, object] = convert(args.factory_calibration, camera_sources, args.downscale)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(document, indent=4) + "\n", encoding="utf-8")
         print(output_path)
