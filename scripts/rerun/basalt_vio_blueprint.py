@@ -1,24 +1,37 @@
-"""Generate the default Rerun layout for the four-camera MGO09 recording."""
+"""Generate the default Rerun layout for a four-camera basalt_vio recording.
+
+The entity paths below are basalt_vio's own logging schema, so the layout
+applies to any dataset the runner supports (Monado SLAM, RoboCap, ...).
+
+TODO: the camera count is hardcoded to 4; make it a parameter for rigs
+with 2 or 6 cameras.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import rerun.blueprint as rrb
+import tyro
 
 
 APPLICATION_ID: str = "basalt_vio"
-REPOSITORY_ROOT: Path = Path(__file__).resolve().parents[2]
-DEFAULT_OUTPUT_PATH: Path = (
-    REPOSITORY_ROOT / "datasets/MGO09_short_1_updown/basalt_vio_mgo09.rbl"
-)
+
+
+@dataclass(frozen=True, slots=True)
+class CliArgs:
+    """Command-line arguments for blueprint generation."""
+
+    output: Path
+    """Destination `.rbl` path."""
 
 
 def _camera_view(camera_index: int) -> rrb.Spatial2DView:
     """Create one synchronized camera view.
 
     Args:
-        camera_index: Zero-based camera number in the Reverb G2 rig.
+        camera_index: Zero-based camera number in the rig.
 
     Returns:
         A 2D view rooted at the camera's pinhole projection.
@@ -113,8 +126,8 @@ def build_blueprint() -> rrb.Blueprint:
     )
 
 
-def save_blueprint(output_path: Path = DEFAULT_OUTPUT_PATH) -> None:
-    """Write the MGO09 blueprint to disk.
+def save_blueprint(output_path: Path) -> None:
+    """Write the blueprint to disk.
 
     Args:
         output_path: Destination `.rbl` path.
@@ -123,11 +136,11 @@ def save_blueprint(output_path: Path = DEFAULT_OUTPUT_PATH) -> None:
     build_blueprint().save(APPLICATION_ID, output_path)
 
 
-def main() -> None:
-    """Generate the default blueprint beside the MGO09 recording."""
-    save_blueprint()
-    print(DEFAULT_OUTPUT_PATH)
+def main(args: CliArgs) -> None:
+    """Generate the blueprint at the requested path."""
+    save_blueprint(args.output)
+    print(args.output)
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(CliArgs))

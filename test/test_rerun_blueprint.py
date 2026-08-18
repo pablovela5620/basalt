@@ -1,4 +1,4 @@
-"""Tests for the four-camera Rerun blueprint."""
+"""Tests for the shared four-camera basalt_vio Rerun blueprint."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 import rerun.blueprint as rrb
 
-from scripts.rerun.mgo09_blueprint import build_blueprint, save_blueprint
+from scripts.rerun.basalt_vio_blueprint import build_blueprint, save_blueprint
 
 
 def _walk(part: Any) -> list[Any]:
@@ -21,8 +21,8 @@ def _walk(part: Any) -> list[Any]:
     return descendants
 
 
-class Mgo09BlueprintTest(unittest.TestCase):
-    """Validate the intentional MGO09 Viewer layout."""
+class BasaltVioBlueprintTest(unittest.TestCase):
+    """Validate the intentional basalt_vio Viewer layout."""
 
     def test_blueprint_contains_four_cameras_world_and_sensor_plots(self) -> None:
         """The layout must expose every part of the four-camera VIO recording."""
@@ -74,7 +74,7 @@ class Mgo09BlueprintTest(unittest.TestCase):
     def test_blueprint_serializes_to_nonempty_rbl(self) -> None:
         """The generated blueprint must be loadable as a Rerun artifact."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            output_path: Path = Path(temp_dir) / "mgo09.rbl"
+            output_path: Path = Path(temp_dir) / "basalt_vio.rbl"
             save_blueprint(output_path)
 
             self.assertTrue(output_path.is_file())

@@ -45,26 +45,32 @@ From a new terminal:
 ```bash
 git clone --branch pixi https://github.com/pablovela5620/basalt.git
 cd basalt
-pixi install
-pixi run submodules
-pixi run configure
-pixi run build                 # creates build/basalt_vio
+pixi run robocap               # everything: build + download + VIO + Rerun viewer
 ```
 
-Pixi supplies the compiler, CMake, native libraries, Python tools, FFmpeg, and
-Rerun. Commands run through `pixi run`, so no environment activation is needed.
-For later rebuilds, run `pixi run configure-then-build` from the repository.
+`pixi run robocap` fetches submodules, configures, compiles `basalt_vio`,
+downloads the [RoboCap example session](https://huggingface.co/datasets/pablovela5620/robocap-example)
+(153 MB into `datasets/robocap-example/`), runs four-camera VIO on it, and opens
+the recording in the Rerun viewer. Pixi supplies the compiler, CMake, native
+libraries, Python tools, FFmpeg, and Rerun — no environment activation needed.
 
-Run the downloadable four-camera Monado example and open it in Rerun:
+The other visible tasks (`pixi task list` shows them; `_`-prefixed helpers are
+chained intermediaries):
 
 ```bash
-pixi run mgo09-rerun           # downloads, builds, and records the example
-pixi run mgo09-view
+pixi run build                 # fetch submodules, configure, compile basalt_vio
+pixi run msd                   # same demo on a Monado SLAM dataset (default MGO09)
+pixi run msd MOO09_short_1_updown MO_odyssey_plus MOO_others   # any MSD sequence
+pixi run robocap-calib         # RoboCap factory calibration -> Basalt JSON
+pixi run robocap-test          # calibration + dataset reader + blueprint tests
 ```
 
-Run `pixi task list` to see every available workflow. For native RoboCap data,
-follow the [RoboCap offline input guide](doc/RoboCap.md); it includes calibration,
-four-camera VIO, Rerun recording, and adapter test commands.
+`msd` takes three arguments — dataset name, device group, and subgroup — matching
+the folder layout of [monado-slam-datasets](https://huggingface.co/datasets/collabora/monado-slam-datasets).
+Both demos write `basalt_vio.rrd`, a TUM trajectory, and a shared Rerun layout
+(`scripts/rerun/basalt_vio_blueprint.py`) under `datasets/`. For native RoboCap
+data, follow the [RoboCap offline input guide](doc/RoboCap.md); it includes
+calibration, four-camera VIO, Rerun recording, and adapter test commands.
 
 ## Installation
 
