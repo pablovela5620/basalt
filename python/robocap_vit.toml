@@ -1,0 +1,13 @@
+# Unified Basalt config for the RoboCap VIT driver.
+# cam-calib is empty on purpose: calibration is added programmatically
+# (vit_tracker_add_camera_calibration / add_imu_calibration) by the driver.
+# Paths are relative to the repository root.
+
+show-gui=0
+cam-calib=""
+config-path="data/msd/msdmo_config.json"
+marg-data=""
+print-queue=0
+use-double=0
+deterministic=1
+num-threads=1

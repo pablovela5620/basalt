@@ -189,7 +189,12 @@ struct Tracker::Implementation {
     load_unified_config(config->file);
 
     vio_config.load(config_path);
-    load_calibration_data(cam_calib_path);
+    // An empty cam-calib means the caller supplies calibration programmatically
+    // via add_cam/imu_calibration while still using the unified config for VIO
+    // tuning and determinism.
+    if (!cam_calib_path.empty()) {
+      load_calibration_data(cam_calib_path);
+    }
 
     monado_out_state_queue.set_capacity(32);
   }
@@ -228,7 +233,7 @@ struct Tracker::Implementation {
     CLI::App app{"Options for the Basalt SLAM Tracker"};
 
     app.add_option("--show-gui", show_gui, "Show GUI");
-    app.add_option("--cam-calib", cam_calib_path, "Ground-truth camera calibration used for simulation.")->required();
+    app.add_option("--cam-calib", cam_calib_path, "Camera calibration path; empty = calibration is added programmatically.");
     app.add_option("--config-path", config_path, "Path to config file.")->required();
     app.add_option("--marg-data", marg_data_path, "Path to folder where marginalization data will be stored.");
     app.add_option("--print-queue", print_queue, "Poll and print for queue sizes.");
@@ -619,7 +624,7 @@ Tracker::Tracker(const vit::Config *config) { impl_ = make_unique<Tracker::Imple
 vit::Result Tracker::has_image_format(vit::ImageFormat fmt, bool *out) const {
   switch (fmt) {
     case VIT_IMAGE_FORMAT_L8:
-    case VIT_IMAGE_FORMAT_L16: *out = true; break;
+    case VIT_IMAGE_FORMAT_L16: *out = true; return vit::Result::VIT_SUCCESS;
     default: std::cerr << "Unknown image format: " << fmt << std::endl; break;
   }
 
