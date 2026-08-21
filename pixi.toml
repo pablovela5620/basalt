@@ -181,16 +181,33 @@ depends-on = ["_robocap-calib-test", "_robocap-dataset-test", "_blueprint-test"]
 [feature.driver]
 platforms = ["linux-64"]
 
+[feature.driver.system-requirements]
+cuda = "12"
+
 [feature.driver.dependencies]
 python = "3.12.*"
 numpy = "*"
 av = "*"
 pyyaml = "*"
 tyro = "*"
+pytorch-gpu = "*"
+torchcodec = "*"
+pyarrow = "*"
+
+[feature.driver.pypi-dependencies]
+rerun-sdk = { version = "==0.36.*", extras = ["datafusion"] }
 
 [feature.driver.tasks.vit-golden]
-description = "Step-A gate: file-fed VIT driver vs the basalt_vio golden trajectory"
+description = "Step-A gate: file-fed VIT driver vs the basalt_vio golden trajectory (binding fidelity, 5 cm)"
 cmd = "python python/drive_files.py --output datasets/vit_files_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_files_trajectory.csv"
+
+[feature.driver.tasks.vit-golden-catalog]
+# 10 cm: the NVDEC+RGB-roundtrip pixels differ from swscale gray8 by ~0.5 LSB,
+# which deterministic VIO amplifies to a few cm of ATE over a session. Frameset
+# timestamps agree with the file reader to 1 ns; the gap is decode-path only.
+description = "Step-B gate: catalog+NVDEC VIT driver vs the golden trajectory (decoder equivalence, 10 cm)"
+args = [{ arg = "rrd" }]
+cmd = "python python/drive_catalog.py --lib build-norerun/libbasalt.so --rrd {{ rrd }} --output datasets/vit_catalog_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_catalog_trajectory.csv --tolerance-m 0.10"
 
 [environments]
 driver = { features = ["driver"], no-default-feature = true }

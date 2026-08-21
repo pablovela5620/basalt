@@ -7,6 +7,7 @@ create/start/stop, push imu/img, programmatic calibration, pop poses.
 from __future__ import annotations
 
 import ctypes
+import os
 from collections.abc import Iterator
 from enum import IntEnum
 from pathlib import Path
@@ -131,8 +132,13 @@ class ImuCalibration(ctypes.Structure):
 
 
 def load(lib_path: Path) -> ctypes.CDLL:
-    """Load libbasalt and declare the vit_* signatures the Tracker uses."""
-    lib = ctypes.CDLL(str(lib_path))
+    """Load libbasalt and declare the vit_* signatures the Tracker uses.
+
+    RTLD_DEEPBIND: libbasalt carries its own arrow (via the C++ rerun SDK) which
+    must not resolve against the pyarrow/datafusion copy already loaded when the
+    driver also imports the rerun Python SDK.
+    """
+    lib = ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_LOCAL | os.RTLD_DEEPBIND)
     tracker_p = ctypes.c_void_p
     pose_p = ctypes.c_void_p
     signatures: dict[str, tuple[list, object]] = {
