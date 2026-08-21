@@ -12,6 +12,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from fractions import Fraction
@@ -163,8 +164,14 @@ def main() -> None:
         poses.extend(tracker.poses())
         if count % 100 == 0:
             print(f"frameset {count}/{len(framesets)}, {len(poses)} poses, {time.monotonic() - started:.1f}s", flush=True)
-    tracker.stop()
-    poses.extend(tracker.poses())
+    # Non-deterministic mode delivers the last states asynchronously: poll-drain.
+    for _ in range(100):
+        if len(poses) >= len(framesets):
+            break
+        drained = list(tracker.poses())
+        poses.extend(drained)
+        if not drained:
+            time.sleep(0.05)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as sink:
@@ -172,7 +179,9 @@ def main() -> None:
         for t_ns, px, py, pz, qw, qx, qy, qz in poses:
             sink.write(f"{t_ns},{px},{py},{pz},{qw},{qx},{qy},{qz}\n")
     print(f"{len(poses)} poses -> {args.output} ({time.monotonic() - started:.1f}s)", flush=True)
-    tracker.close()
+    # tracker.stop() segfaults in non-deterministic mode (known upstream shutdown
+    # bug, see the TODO in vit_tracker.cpp) — the output is on disk, exit hard.
+    os._exit(0)
 
 
 if __name__ == "__main__":
