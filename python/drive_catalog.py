@@ -120,7 +120,10 @@ def main() -> None:
             .to_arrow_table()
         )
         times = np.array([t.value for t in table[0]], dtype=np.int64)
-        blobs = table[1].combine_chunks().flatten()
+        # large_list: a long session's samples exceed 2 GiB per camera, overflowing
+        # the default int32 list offsets on combine_chunks.
+        import pyarrow as pa
+        blobs = table[1].cast(pa.list_(pa.large_list(pa.uint8()))).combine_chunks().flatten()
         data = memoryview(blobs.flatten().buffers()[1])
         offsets = blobs.offsets.to_pylist()
         samples = [bytes(data[start:end]) for start, end in zip(offsets[:-1], offsets[1:], strict=True)]
