@@ -171,3 +171,26 @@ cmd = "python -m unittest discover -s test -p 'test_rerun_blueprint.py'"
 [tasks.robocap-test]
 description = "Run the RoboCap adapter tests: calibration + dataset reader + blueprint"
 depends-on = ["_robocap-calib-test", "_robocap-dataset-test", "_blueprint-test"]
+
+# ---------------------------------------------------------------------------
+# VIT driver: Python feed for libbasalt's VIT C API (python/*.py).
+# Separate env so the Python feed's deps (PyAV, later torch + the rerun
+# dataloader extra) stay out of the C++ build env. rerun stays 0.36 here,
+# consistent with the repo's C++/blueprint pins.
+# ---------------------------------------------------------------------------
+[feature.driver]
+platforms = ["linux-64"]
+
+[feature.driver.dependencies]
+python = "3.12.*"
+numpy = "*"
+av = "*"
+pyyaml = "*"
+tyro = "*"
+
+[feature.driver.tasks.vit-golden]
+description = "Step-A gate: file-fed VIT driver vs the basalt_vio golden trajectory"
+cmd = "python python/drive_files.py --output datasets/vit_files_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_files_trajectory.csv"
+
+[environments]
+driver = { features = ["driver"], no-default-feature = true }
