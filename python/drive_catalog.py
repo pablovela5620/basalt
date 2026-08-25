@@ -16,10 +16,10 @@ Run from the repository root:
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 import time
+from dataclasses import dataclass
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +28,9 @@ import av
 import numpy as np
 import pyarrow as pa
 import rerun as rr
+import tyro
+from jaxtyping import Float64, Int64, UInt8
+from numpy import ndarray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -121,16 +124,25 @@ def scalar_column(dataset, entity: str, component: str) -> tuple[np.ndarray, np.
     return times[keep], values[keep]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rrd", type=Path, required=True)
-    parser.add_argument("--lib", type=Path, default=Path("build-norerun/libbasalt.so"))
-    parser.add_argument("--config", type=Path, default=Path("python/robocap_vit.toml"))
-    parser.add_argument("--downscale", type=int, default=3)
-    parser.add_argument("--output", type=Path, default=Path("datasets/vit_catalog_trajectory.csv"))
-    args = parser.parse_args()
+@dataclass
+class Config:
+    """Run the catalog-fed VIT driver on one base-layer rrd."""
+
+    rrd: Path
+    """Base-layer rrd holding the session (exoego:v2 schema)."""
+    lib: Path = Path("build-norerun/libbasalt.so")
+    """libbasalt built without the rerun backend (its arrow clashes with pyarrow in-process)."""
+    vit_config: Path = Path("python/robocap_vit.toml")
+    """Unified basalt TOML (VIO tuning + determinism; camera/IMU calibration is programmatic)."""
+    downscale: int = 3
+    """Integer downscale factor (1920x1080 -> 640x360 at 3)."""
+    output: Path = Path("datasets/vit_catalog_trajectory.csv")
+    """Trajectory csv: ns timestamps, position, w-first quaternion."""
+
+
+def main(args: Config) -> None:
     import torch
-    from torchcodec.decoders import VideoDecoder  # after argparse: slow import
+    from torchcodec.decoders import VideoDecoder  # deferred: slow import
 
     server = rr.server.Server(datasets={"drive": [str(args.rrd)]})
     dataset = server.client().get_dataset("drive")
@@ -146,7 +158,7 @@ def main() -> None:
     if missing:
         raise ValueError(f"coverage cameras missing from the recording: {missing} (found {sorted(cam_by_name)})")
 
-    tracker = Tracker(args.lib, str(args.config), cam_count=len(COVERAGE_NAMES))
+    tracker = Tracker(args.lib, str(args.vit_config), cam_count=len(COVERAGE_NAMES))
     decoders, sample_times = [], []
     for index, coverage_name in enumerate(COVERAGE_NAMES):
         entity = f"/world/rig_00/cam_{cam_by_name[coverage_name]:02d}"
@@ -161,11 +173,11 @@ def main() -> None:
         # the inversion below is only correct for that convention — refuse anything else.
         if relation != 2:
             raise ValueError(f"{entity}: Transform3D relation {relation} is not ChildFromParent(2); refusing to invert blindly")
-        k = np.asarray(static_value(dataset, f"{entity}/pinhole", "Pinhole:image_from_camera"), dtype=np.float64).reshape(3, 3, order="F")
+        k_matrix: Float64[ndarray, "3 3"] = np.asarray(static_value(dataset, f"{entity}/pinhole", "Pinhole:image_from_camera"), dtype=np.float64).reshape(3, 3, order="F")
         resolution = np.asarray(static_value(dataset, f"{entity}/pinhole", "Pinhole:resolution"), dtype=np.float64).ravel()
-        cam_R_imu = np.asarray(static_value(dataset, entity, "Transform3D:mat3x3"), dtype=np.float64).reshape(3, 3, order="F")
-        cam_t_imu = np.asarray(static_value(dataset, entity, "Transform3D:translation"), dtype=np.float64).ravel()
-        T_imu_cam = np.eye(4)
+        cam_R_imu: Float64[ndarray, "3 3"] = np.asarray(static_value(dataset, entity, "Transform3D:mat3x3"), dtype=np.float64).reshape(3, 3, order="F")
+        cam_t_imu: Float64[ndarray, "3"] = np.asarray(static_value(dataset, entity, "Transform3D:translation"), dtype=np.float64).ravel()
+        T_imu_cam: Float64[ndarray, "4 4"] = np.eye(4)
         T_imu_cam[:3, :3] = cam_R_imu.T
         T_imu_cam[:3, 3] = -cam_R_imu.T @ cam_t_imu
         d = args.downscale
@@ -174,10 +186,10 @@ def main() -> None:
             width=int(resolution[0]) // d,
             height=int(resolution[1]) // d,
             frequency=30.0,
-            fx=k[0, 0] / d,
-            fy=k[1, 1] / d,
-            cx=(k[0, 2] + 0.5) / d - 0.5,  # converter's half-pixel convention (basalt_convert_robocap_calib)
-            cy=(k[1, 2] + 0.5) / d - 0.5,
+            fx=k_matrix[0, 0] / d,
+            fy=k_matrix[1, 1] / d,
+            cx=(k_matrix[0, 2] + 0.5) / d - 0.5,  # converter's half-pixel convention (basalt_convert_robocap_calib)
+            cy=(k_matrix[1, 2] + 0.5) / d - 0.5,
             distortion=distortion[:4].tolist(),
             T_imu_cam=T_imu_cam,
         )
@@ -190,7 +202,7 @@ def main() -> None:
             .sort("video_time")
             .to_arrow_table()
         )
-        times = np.array([t.value for t in table[0]], dtype=np.int64)
+        times_ns: Int64[ndarray, "n_samples"] = np.array([t.value for t in table[0]], dtype=np.int64)
         # large_list: a long session's samples exceed 2 GiB per camera, overflowing
         # the default int32 offsets on combine_chunks.
         blobs = table[1].cast(pa.list_(pa.large_list(pa.uint8()))).combine_chunks().flatten()
@@ -199,8 +211,8 @@ def main() -> None:
         samples = [bytes(data[start:end]) for start, end in zip(offsets[:-1], offsets[1:], strict=True)]
         keyframes = [bool(flag) for flag in table[2].combine_chunks().flatten().to_pylist()]
         decoders.append(VideoDecoder(wrap_mp4(samples, keyframes, 30), device="cuda", seek_mode="exact", num_ffmpeg_threads=0))
-        sample_times.append(times)
-        print(f"cam {index} ({coverage_name}): {len(times)} samples", flush=True)
+        sample_times.append(times_ns)
+        print(f"cam {index} ({coverage_name}): {len(times_ns)} samples", flush=True)
 
     tracker.add_imu_calibration(frequency=IMU_UPDATE_RATE, **IMU_NOISE)
 
@@ -235,8 +247,8 @@ def main() -> None:
             # (the streams carry real chroma; taking a raw channel is ~28 LSB off).
             luma = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]).unsqueeze(0).unsqueeze(0)
             gray = torch.nn.functional.avg_pool2d(luma, args.downscale).round().clamp(0, 255).to(torch.uint8)  # exact box average == SWS_AREA
-            image = np.ascontiguousarray(gray[0, 0].cpu().numpy())
-            tracker.push_img(camera, timestamp_ns, image)
+            image_hw: UInt8[ndarray, "h w"] = np.ascontiguousarray(gray[0, 0].cpu().numpy())
+            tracker.push_img(camera, timestamp_ns, image_hw)
         poses.extend(tracker.poses())
         if count % 100 == 0:
             print(f"frameset {count}/{len(framesets)}, {len(poses)} poses, {time.monotonic() - started:.1f}s", flush=True)
@@ -267,4 +279,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(Config))

@@ -6,27 +6,39 @@ Exit code 0 iff ATE RMSE < --tolerance-m and pose counts agree within --count-sl
 
 from __future__ import annotations
 
-import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import tyro
+from jaxtyping import Float64, Int64
+from numpy import ndarray
 
 ASSOCIATION_TOLERANCE_NS = 5_000_000
 
 
-def load(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    rows = np.loadtxt(path, delimiter=",", skiprows=1)
+def load(path: Path) -> tuple[Int64[ndarray, "n"], Float64[ndarray, "n 3"]]:
+    """Timestamps (ns) and positions from one trajectory csv."""
+    rows: Float64[ndarray, "n 8"] = np.loadtxt(path, delimiter=",", skiprows=1)
     return rows[:, 0].astype(np.int64), rows[:, 1:4]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("golden", type=Path)
-    parser.add_argument("candidate", type=Path)
-    parser.add_argument("--tolerance-m", type=float, default=0.05)
-    parser.add_argument("--count-slack", type=float, default=0.02)
-    args = parser.parse_args()
+@dataclass
+class Config:
+    """Gate a candidate trajectory against the golden one."""
+
+    golden: tyro.conf.Positional[Path]
+    """Reference trajectory csv."""
+    candidate: tyro.conf.Positional[Path]
+    """Trajectory csv under test."""
+    tolerance_m: float = 0.05
+    """Maximum rigid-aligned ATE RMSE in metres."""
+    count_slack: float = 0.02
+    """Allowed relative pose-count difference."""
+
+
+def main(args: Config) -> None:
 
     golden_t, golden_p = load(args.golden)
     candidate_t, candidate_p = load(args.candidate)
@@ -57,4 +69,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(Config))

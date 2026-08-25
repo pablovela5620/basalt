@@ -11,8 +11,14 @@ import os
 from collections.abc import Iterator
 from enum import IntEnum
 from pathlib import Path
+from typing import TypeAlias
 
 import numpy as np
+from jaxtyping import Float64, UInt8
+from numpy import ndarray
+
+PoseTuple: TypeAlias = tuple[int, float, float, float, float, float, float, float]
+"""One tracker pose: (t_ns, px, py, pz, qw, qx, qy, qz)."""
 
 DISTORTION_MAX_COUNT = 32
 
@@ -201,9 +207,23 @@ class Tracker:
         cx: float,
         cy: float,
         distortion: list[float],
-        T_imu_cam: np.ndarray,
+        T_imu_cam: Float64[ndarray, "4 4"],
     ) -> None:
-        calibration = CameraCalibration(
+        """Register one KB4 camera.
+
+        Args:
+            index: Camera slot (0-based, matching push_img's cam_index).
+            width: Image width in pixels (post-downscale).
+            height: Image height in pixels (post-downscale).
+            frequency: Nominal frame rate in Hz.
+            fx: Focal length x, pixels. fy/cx/cy likewise.
+            fy: Focal length y, pixels.
+            cx: Principal point x, pixels.
+            cy: Principal point y, pixels.
+            distortion: Kannala-Brandt k1..k4.
+            T_imu_cam: Row-major camera pose in the IMU frame, float64 (4, 4).
+        """
+        calibration: CameraCalibration = CameraCalibration(
             camera_index=index,
             width=width,
             height=height,
@@ -228,8 +248,8 @@ class Tracker:
         accel_noise_std: float,
         accel_bias_std: float,
     ) -> None:
-        identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        calibration = ImuCalibration(imu_index=0, frequency=frequency)
+        identity: list[float] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        calibration: ImuCalibration = ImuCalibration(imu_index=0, frequency=frequency)
         for channel, noise, bias in ((calibration.gyro, gyro_noise_std, gyro_bias_std), (calibration.accel, accel_noise_std, accel_bias_std)):
             channel.transform[:] = identity
             channel.offset[:] = [0.0] * 3
@@ -243,8 +263,9 @@ class Tracker:
     def stop(self) -> None:
         check(self.lib.vit_tracker_stop(self._handle), "stop")
 
-    def push_imu(self, t_ns: int, gyro_xyz: np.ndarray, accel_xyz: np.ndarray) -> None:
-        sample = ImuSample(
+    def push_imu(self, t_ns: int, gyro_xyz: Float64[ndarray, "3"], accel_xyz: Float64[ndarray, "3"]) -> None:
+        """Push one IMU sample (gyro rad/s, accel m/s^2) at t_ns on the tracker clock."""
+        sample: ImuSample = ImuSample(
             timestamp=t_ns,
             ax=accel_xyz[0],
             ay=accel_xyz[1],
@@ -255,7 +276,7 @@ class Tracker:
         )
         check(self.lib.vit_tracker_push_imu_sample(self._handle, ctypes.byref(sample)), "push_imu")
 
-    def push_img(self, cam_index: int, t_ns: int, image: np.ndarray) -> None:
+    def push_img(self, cam_index: int, t_ns: int, image: UInt8[ndarray, "h w"]) -> None:
         """Push one L8 frame; the tracker copies before returning.
 
         The C++ side indexes the buffer linearly, so it must be uint8, C-contiguous,
@@ -264,7 +285,7 @@ class Tracker:
         if image.dtype != np.uint8 or image.ndim != 2 or not image.flags.c_contiguous:
             raise ValueError(f"push_img needs a C-contiguous uint8 HxW array, got {image.dtype} {image.shape}")
         height, width = image.shape
-        sample = ImgSample(
+        sample: ImgSample = ImgSample(
             cam_index=cam_index,
             timestamp=t_ns,
             data=ctypes.cast(ctypes.c_void_p(image.ctypes.data), ctypes.POINTER(ctypes.c_uint8)),
@@ -278,14 +299,14 @@ class Tracker:
         )
         check(self.lib.vit_tracker_push_img_sample(self._handle, ctypes.byref(sample)), "push_img")
 
-    def poses(self) -> Iterator[tuple[int, float, float, float, float, float, float, float]]:
+    def poses(self) -> Iterator[PoseTuple]:
         """Drain currently available poses as (t_ns, px, py, pz, qw, qx, qy, qz)."""
         while True:
-            pose = ctypes.c_void_p()
+            pose: ctypes.c_void_p = ctypes.c_void_p()
             check(self.lib.vit_tracker_pop_pose(self._handle, ctypes.byref(pose)), "pop_pose")
             if not pose:  # empty queue: SUCCESS with a null pose
                 return
-            data = PoseData()
+            data: PoseData = PoseData()
             try:
                 check(self.lib.vit_pose_get_data(pose, ctypes.byref(data)), "pose_get_data")
             finally:
