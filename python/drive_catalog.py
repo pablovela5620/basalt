@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
+from typing import NamedTuple
 
 import av
 import numpy as np
@@ -39,11 +40,26 @@ from robocap_feed import CAMERA_TO_IMU_OFFSET_NS, FrameStamp, Frameset, ImuSampl
 from vit_binding import PoseTuple, Tracker  # noqa: E402
 
 COVERAGE_NAMES: tuple[str, ...] = ("left", "left_front", "right_front", "right")
+
+
+class ImuNoise(NamedTuple):
+    """Continuous-time IMU noise densities, in basalt's units."""
+
+    gyro_noise_std: float
+    """Gyroscope noise density."""
+    gyro_bias_std: float
+    """Gyroscope bias random walk."""
+    accel_noise_std: float
+    """Accelerometer noise density."""
+    accel_bias_std: float
+    """Accelerometer bias random walk."""
+
+
 # Factory IMU intrinsics for device f408193e6447b3b0, from the Kalibr yaml
 # imus_intrinsic/imu_mid_0.yaml (noise/random-walk densities, update rate).
 # TODO(slam-verb): log these onto the rrd's imu node and read them, like the
 # camera intrinsics already are — hardcoding mis-tunes any other device.
-IMU_NOISE: dict[str, float] = {"gyro_noise_std": 0.0007300442812547, "gyro_bias_std": 3.445397083168e-05, "accel_noise_std": 0.005955224218014, "accel_bias_std": 0.0001963150489218}
+IMU_NOISE = ImuNoise(gyro_noise_std=0.0007300442812547, gyro_bias_std=3.445397083168e-05, accel_noise_std=0.005955224218014, accel_bias_std=0.0001963150489218)
 IMU_UPDATE_RATE = 200.0
 
 
@@ -211,7 +227,13 @@ def main(args: Config) -> None:
         sample_times.append(times_ns)
         print(f"cam {index} ({coverage_name}): {len(times_ns)} samples", flush=True)
 
-    tracker.add_imu_calibration(frequency=IMU_UPDATE_RATE, **IMU_NOISE)
+    tracker.add_imu_calibration(
+        frequency=IMU_UPDATE_RATE,
+        gyro_noise_std=IMU_NOISE.gyro_noise_std,
+        gyro_bias_std=IMU_NOISE.gyro_bias_std,
+        accel_noise_std=IMU_NOISE.accel_noise_std,
+        accel_bias_std=IMU_NOISE.accel_bias_std,
+    )
 
     # IMU back onto the raw device clock, accel interpolated onto gyro times.
     gyro_t: Int64[ndarray, "n_gyro"]

@@ -55,6 +55,7 @@ epoxy = "*"
 eigen = "5.0.1.*"
 librerun-sdk = "0.36.*"
 rerun-sdk = "0.36.*"
+pyserde = ">=0.32.0,<0.33"
 
 [target.linux.dependencies]
 # Linux-only: faster linker + the X11/Wayland/Mesa GL stack Pangolin needs on Linux.
@@ -198,6 +199,7 @@ pytorch-gpu = "*"
 torchcodec = "*"
 pyarrow = "*"
 jaxtyping = ">=0.3.11,<0.4"
+pyserde = ">=0.32.0,<0.33"
 
 [feature.driver.pypi-dependencies]
 rerun-sdk = { version = "==0.36.*", extras = ["datafusion"] }
