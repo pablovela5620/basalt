@@ -623,8 +623,11 @@ Tracker::Tracker(const vit::Config *config) { impl_ = make_unique<Tracker::Imple
 
 vit::Result Tracker::has_image_format(vit::ImageFormat fmt, bool *out) const {
   switch (fmt) {
-    case VIT_IMAGE_FORMAT_L8:
-    case VIT_IMAGE_FORMAT_L16: *out = true; return vit::Result::VIT_SUCCESS;
+    case VIT_IMAGE_FORMAT_L8: *out = true; return vit::Result::VIT_SUCCESS;
+    // L16 is not actually supported: the push path maps non-L8 input to CV_8UC3
+    // and copies 8-bit elements, so 16-bit pixels would decode as noise.
+    case VIT_IMAGE_FORMAT_L16:
+    case VIT_IMAGE_FORMAT_R8G8B8: *out = false; return vit::Result::VIT_SUCCESS;
     default: std::cerr << "Unknown image format: " << fmt << std::endl; break;
   }
 

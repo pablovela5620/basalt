@@ -26,10 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import basalt_convert_robocap_calib as calib_converter  # noqa: E402
+from drive_catalog import CAMERA_TO_IMU_OFFSET_NS, build_framesets  # noqa: E402  (keeper module owns these)
 from vit_binding import Tracker  # noqa: E402
 
-CAMERA_TO_IMU_OFFSET_NS = 14_902_432
-FRAMESET_TOLERANCE_NS = 1_000_000
 GYRO_SCALE = 0.000266316
 ACCEL_SCALE = 0.001197101
 COVERAGE_DEVICES = ((4, "left"), (1, "left-front"), (5, "right-front"), (3, "right"))
@@ -52,40 +51,6 @@ def index_video(path: Path) -> list[tuple[int, int]]:
     if not frames:
         raise ValueError(f"No timestamped video packets in {path}")
     return frames
-
-
-def build_framesets(camera_frames: list[list[tuple[int, int]]]) -> list[tuple[int, list[int]]]:
-    """Mirror the reader: anchor camera 0, nearest match per camera, median + offset.
-
-    Returns (timestamp_ns_on_imu_clock, per-camera frame index) per complete frameset.
-    """
-    framesets: list[tuple[int, list[int]]] = []
-    cursors = [0] * len(camera_frames)
-    for anchor_index, (_, anchor_ns) in enumerate(camera_frames[0]):
-        selected = [anchor_index]
-        complete = True
-        for camera in range(1, len(camera_frames)):
-            frames = camera_frames[camera]
-            index = cursors[camera]
-            if index >= len(frames):
-                complete = False
-                break
-            while index + 1 < len(frames) and abs(frames[index + 1][1] - anchor_ns) <= abs(frames[index][1] - anchor_ns):
-                index += 1
-            if abs(frames[index][1] - anchor_ns) > FRAMESET_TOLERANCE_NS:
-                if frames[index][1] < anchor_ns:
-                    cursors[camera] = index + 1
-                complete = False
-                break
-            cursors[camera] = index
-            selected.append(index)
-        if not complete:
-            continue
-        times = sorted(camera_frames[camera][selected[camera]][1] for camera in range(len(camera_frames)))
-        middle = len(times) // 2
-        median = times[middle] if len(times) % 2 == 1 else times[middle - 1] + (times[middle] - times[middle - 1]) // 2
-        framesets.append((median + CAMERA_TO_IMU_OFFSET_NS, selected))
-    return framesets
 
 
 def load_imu(session_dir: Path, session: int) -> np.ndarray:
@@ -151,8 +116,8 @@ class SequentialDecoder:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--session-dir", type=Path, default=Path("/mnt/nas/datasets/robocap/f408193e6447b3b0_session_15"))
-    parser.add_argument("--factory-dir", type=Path, default=Path("/mnt/nas/datasets/robocap/0factory-calibration-f408193e6447b3b0"))
+    parser.add_argument("--session-dir", type=Path, default=Path("datasets/robocap-example/f408193e6447b3b0_session_15"))
+    parser.add_argument("--factory-dir", type=Path, default=Path("/mnt/nas/datasets/robocap/0factory-calibration-f408193e6447b3b0"))  # raw Kalibr tree; not in the HF sample
     parser.add_argument("--lib", type=Path, default=Path("build/libbasalt.so"))
     parser.add_argument("--config", type=Path, default=Path("python/robocap_vit.toml"))
     parser.add_argument("--downscale", type=int, default=3)
@@ -235,7 +200,7 @@ def main() -> None:
         for camera, frame_index in enumerate(selected):
             pts = frames_per_camera[camera][frame_index][0]
             image = np.ascontiguousarray(decoders[camera].frame_at(pts))
-            tracker.push_img(camera, timestamp_ns, image.ctypes.data, width=image.shape[1], height=image.shape[0], stride=image.shape[1])
+            tracker.push_img(camera, timestamp_ns, image)
         poses.extend(tracker.poses())  # drain: deterministic mode fills a bounded queue
         if count % 100 == 0:
             print(f"frameset {count}/{len(framesets)}, {len(poses)} poses, {time.monotonic() - started:.1f}s", flush=True)
