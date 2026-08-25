@@ -3,8 +3,8 @@
 Mirrors src/io/dataset_io_robocap.cpp exactly — same coverage cameras, frameset
 median timestamps, SWS_AREA downscale, and accel-onto-gyro interpolation — so a
 trajectory mismatch against the file-fed basalt_vio golden run isolates to the
-ctypes binding, not the data preparation. Throwaway by design; the production
-driver feeds from the Rerun catalog instead of files.
+ctypes binding, not the data preparation. The production driver feeds from the
+Rerun catalog instead of files; this one stays as the binding-fidelity gate.
 
 Run from the repository root:
     pixi run -e driver python python/drive_files.py --session-dir /mnt/nas/datasets/robocap/f408193e6447b3b0_session_15
@@ -12,21 +12,24 @@ Run from the repository root:
 
 from __future__ import annotations
 
-import argparse
 import sqlite3
 import sys
 import time
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
 import av
 import numpy as np
+import tyro
+from jaxtyping import Float64, UInt8
+from numpy import ndarray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import basalt_convert_robocap_calib as calib_converter  # noqa: E402
-from drive_catalog import CAMERA_TO_IMU_OFFSET_NS, build_framesets  # noqa: E402  (keeper module owns these)
+from robocap_feed import build_framesets, feed_imu_lead  # noqa: E402
 from vit_binding import Tracker  # noqa: E402
 
 GYRO_SCALE = 0.000266316
@@ -53,7 +56,7 @@ def index_video(path: Path) -> list[tuple[int, int]]:
     return frames
 
 
-def load_imu(session_dir: Path, session: int) -> np.ndarray:
+def load_imu(session_dir: Path, session: int) -> list[tuple[int, Float64[ndarray, "3"], Float64[ndarray, "3"]]]:
     """Paired (t_ns, gyro_xyz, accel_xyz) rows: accel interpolated onto gyro times."""
     channels: dict[str, list[np.ndarray]] = {"gyro_data": [], "acc_data": []}
     for db_path in sorted(session_dir.glob(f"IMUWriter_dev0_session{session}_segment*.db")):
@@ -97,7 +100,7 @@ class SequentialDecoder:
         self.reformatter = av.video.reformatter.VideoReformatter()
         self.current: av.VideoFrame | None = None
 
-    def frame_at(self, pts: int) -> np.ndarray:
+    def frame_at(self, pts: int) -> UInt8[ndarray, "h w"]:
         while self.current is None or self.current.pts < pts:
             self.current = next(self.decoder)
         if self.current.pts != pts:
@@ -114,16 +117,25 @@ class SequentialDecoder:
         return np.frombuffer(bytes(gray.planes[0]), dtype=np.uint8).reshape(target_height, gray.planes[0].line_size)[:, :target_width]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--session-dir", type=Path, default=Path("datasets/robocap-example/f408193e6447b3b0_session_15"))
-    parser.add_argument("--factory-dir", type=Path, default=Path("/mnt/nas/datasets/robocap/0factory-calibration-f408193e6447b3b0"))  # raw Kalibr tree; not in the HF sample
-    parser.add_argument("--lib", type=Path, default=Path("build/libbasalt.so"))
-    parser.add_argument("--config", type=Path, default=Path("python/robocap_vit.toml"))
-    parser.add_argument("--downscale", type=int, default=3)
-    parser.add_argument("--output", type=Path, default=Path("datasets/vit_files_trajectory.csv"))
-    args = parser.parse_args()
+@dataclass
+class Config:
+    """Feed one raw RoboCap session through the VIT tracker, file-fed."""
 
+    session_dir: Path = Path("datasets/robocap-example/f408193e6447b3b0_session_15")
+    """Raw session directory (segment mp4s + IMU sqlite dbs)."""
+    factory_dir: Path = Path("/mnt/nas/datasets/robocap/0factory-calibration-f408193e6447b3b0")
+    """Raw Kalibr factory-calibration tree; not part of the HF sample."""
+    lib: Path = Path("build/libbasalt.so")
+    """libbasalt.so exporting the VIT C API."""
+    vit_config: Path = Path("python/robocap_vit.toml")
+    """VIT tracker config toml."""
+    downscale: int = 3
+    """Integer downscale applied to both frames and intrinsics."""
+    output: Path = Path("datasets/vit_files_trajectory.csv")
+    """Trajectory csv destination."""
+
+
+def main(args: Config) -> None:
     session = int(args.session_dir.name.rsplit("_", 1)[1])
     calibration = calib_converter.convert(args.factory_dir, calib_converter.COVERAGE_CAMERA_SOURCES, args.downscale)["value0"]
 
@@ -143,7 +155,7 @@ def main() -> None:
     print(f"{len(framesets)} complete framesets")
     imu = load_imu(args.session_dir, session)
 
-    tracker = Tracker(args.lib, str(args.config), cam_count=len(COVERAGE_DEVICES))
+    tracker = Tracker(args.lib, str(args.vit_config), cam_count=len(COVERAGE_DEVICES))
     for index, (transform, intrinsics, resolution) in enumerate(
         zip(calibration["T_imu_cam"], calibration["intrinsics"], calibration["resolution"], strict=True)
     ):
@@ -189,23 +201,16 @@ def main() -> None:
     imu_cursor = 0
     started = time.monotonic()
     for count, (timestamp_ns, selected) in enumerate(framesets):
-        # Lead the IMU past the frame time: in deterministic mode push_img blocks
-        # until the backend emits this frame's state, and the backend needs an IMU
-        # sample at/after the frame timestamp to integrate up to it. Feeding only
-        # samples <= t deadlocks on the very first frameset.
-        while imu_cursor < len(imu) and (imu_cursor == 0 or imu[imu_cursor - 1][0] <= timestamp_ns):
-            t_ns, gyro_xyz, accel_xyz = imu[imu_cursor]
-            tracker.push_imu(t_ns, gyro_xyz, accel_xyz)
-            imu_cursor += 1
+        imu_cursor = feed_imu_lead(tracker, imu, imu_cursor, timestamp_ns)
         for camera, frame_index in enumerate(selected):
             pts = frames_per_camera[camera][frame_index][0]
             image = np.ascontiguousarray(decoders[camera].frame_at(pts))
             tracker.push_img(camera, timestamp_ns, image)
-        poses.extend(tracker.poses())  # drain: deterministic mode fills a bounded queue
+        poses.extend(tracker.drain_poses())  # deterministic mode fills a bounded queue
         if count % 100 == 0:
             print(f"frameset {count}/{len(framesets)}, {len(poses)} poses, {time.monotonic() - started:.1f}s", flush=True)
     tracker.stop()
-    poses.extend(tracker.poses())
+    poses.extend(tracker.drain_poses())
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as sink:
@@ -217,4 +222,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(Config))

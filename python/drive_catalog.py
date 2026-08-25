@@ -34,10 +34,9 @@ from numpy import ndarray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from robocap_feed import CAMERA_TO_IMU_OFFSET_NS, build_framesets, feed_imu_lead  # noqa: E402
 from vit_binding import Tracker  # noqa: E402
 
-CAMERA_TO_IMU_OFFSET_NS = 14_902_432  # basalt kCameraToImuOffsetNs (dataset_io_robocap.cpp)
-FRAMESET_TOLERANCE_NS = 1_000_000
 COVERAGE_NAMES = ("left", "left_front", "right_front", "right")
 # Factory IMU intrinsics for device f408193e6447b3b0, from the Kalibr yaml
 # imus_intrinsic/imu_mid_0.yaml (noise/random-walk densities, update rate).
@@ -45,42 +44,6 @@ COVERAGE_NAMES = ("left", "left_front", "right_front", "right")
 # camera intrinsics already are — hardcoding mis-tunes any other device.
 IMU_NOISE = {"gyro_noise_std": 0.0007300442812547, "gyro_bias_std": 3.445397083168e-05, "accel_noise_std": 0.005955224218014, "accel_bias_std": 0.0001963150489218}
 IMU_UPDATE_RATE = 200.0
-
-
-def build_framesets(camera_frames: list[list[tuple[int, int]]]) -> list[tuple[int, list[int]]]:
-    """Mirror the basalt reader: anchor camera 0, nearest match per camera, median + offset.
-
-    Each camera's frames are (opaque_id, timestamp_ns) in time order; the opaque
-    id is not used here (a pts for file feeds, a decode index for the catalog feed).
-    Returns (timestamp_ns_on_imu_clock, per-camera frame index) per complete frameset.
-    """
-    framesets: list[tuple[int, list[int]]] = []
-    cursors = [0] * len(camera_frames)
-    for anchor_index, (_, anchor_ns) in enumerate(camera_frames[0]):
-        selected = [anchor_index]
-        complete = True
-        for camera in range(1, len(camera_frames)):
-            frames = camera_frames[camera]
-            index = cursors[camera]
-            if index >= len(frames):
-                complete = False
-                break
-            while index + 1 < len(frames) and abs(frames[index + 1][1] - anchor_ns) <= abs(frames[index][1] - anchor_ns):
-                index += 1
-            if abs(frames[index][1] - anchor_ns) > FRAMESET_TOLERANCE_NS:
-                if frames[index][1] < anchor_ns:
-                    cursors[camera] = index + 1
-                complete = False
-                break
-            cursors[camera] = index
-            selected.append(index)
-        if not complete:
-            continue
-        times = sorted(camera_frames[camera][selected[camera]][1] for camera in range(len(camera_frames)))
-        middle = len(times) // 2
-        median = times[middle] if len(times) % 2 == 1 else times[middle - 1] + (times[middle] - times[middle - 1]) // 2
-        framesets.append((median + CAMERA_TO_IMU_OFFSET_NS, selected))
-    return framesets
 
 
 def wrap_mp4(samples: list[bytes], keyframes: list[bool], fps: int) -> bytes:
@@ -100,25 +63,35 @@ def wrap_mp4(samples: list[bytes], keyframes: list[bool], fps: int) -> bytes:
     return buffer.getvalue()
 
 
-def static_value(dataset, entity: str, column: str) -> np.ndarray | str:
-    """One static component, explicitly typed: list columns -> float array (or a lone string), else str."""
+def _static_cell(dataset, entity: str, column: str) -> pa.Scalar:
+    """The single static cell for one component, or ValueError when absent."""
     table = dataset.filter_contents(entity).reader(index=None).select(f"{entity}:{column}").to_arrow_table()
     if table.num_rows == 0:
         raise ValueError(f"no static row for {entity}:{column}")
-    cell = table[0][0]
-    if pa.types.is_list(table[0].type) or pa.types.is_large_list(table[0].type):
-        values = cell.values.to_pylist()
-        if len(values) == 1 and isinstance(values[0], str):
-            return values[0]
-        return np.asarray(values, dtype=np.float64).ravel()
-    return str(cell.as_py())
+    return table[0][0]
 
 
-def scalar_column(dataset, entity: str, component: str) -> tuple[np.ndarray, np.ndarray]:
+def static_array(dataset, entity: str, column: str) -> Float64[ndarray, "n"]:
+    """One static list component as a flat float64 array (matrices arrive column-major)."""
+    cell = _static_cell(dataset, entity, column)
+    return np.asarray(cell.values.to_pylist(), dtype=np.float64).ravel()
+
+
+def static_str(dataset, entity: str, column: str) -> str:
+    """One static string component (bare, or wrapped in a single-element list)."""
+    cell = _static_cell(dataset, entity, column)
+    value = cell.values.to_pylist()[0] if isinstance(cell, (pa.ListScalar, pa.LargeListScalar)) else cell.as_py()
+    if not isinstance(value, str):
+        raise ValueError(f"{entity}:{column} is not a string: {value!r}")
+    return value
+
+
+def scalar_column(dataset, entity: str, component: str) -> tuple[Int64[ndarray, "n"], Float64[ndarray, "n 3"]]:
     """Temporal scalars sorted by video_time, deduplicated keep-first (mirrors the reader's sort_and_deduplicate)."""
     table = dataset.filter_contents(entity).reader(index="video_time").select("video_time", f"{entity}:{component}").sort("video_time").to_arrow_table()
-    times = np.array([t.value for t in table[0]], dtype=np.int64)
-    values = np.array(table[1].combine_chunks().to_pylist(), dtype=np.float64).reshape(len(times), -1)
+    times: Int64[ndarray, "n"] = table[0].combine_chunks().cast(pa.int64()).to_numpy()
+    flat = table[1].combine_chunks().flatten().to_numpy(zero_copy_only=False)
+    values: Float64[ndarray, "n 3"] = np.asarray(flat, dtype=np.float64).reshape(len(times), -1)
     keep = np.ones(len(times), dtype=bool)
     keep[1:] = times[1:] != times[:-1]
     return times[keep], values[keep]
@@ -147,10 +120,10 @@ def main(args: Config) -> None:
     server = rr.server.Server(datasets={"drive": [str(args.rrd)]})
     dataset = server.client().get_dataset("drive")
 
-    num_cameras = int(np.asarray(static_value(dataset, "/world/rig_00", "num_cameras")).ravel()[0])
+    num_cameras = int(static_array(dataset, "/world/rig_00", "num_cameras")[0])
     cam_by_name: dict[str, int] = {}
     for cam in range(num_cameras):
-        name = str(static_value(dataset, f"/world/rig_00/cam_{cam:02d}", "name")).replace("-", "_")
+        name = static_str(dataset, f"/world/rig_00/cam_{cam:02d}", "name").replace("-", "_")
         if name in cam_by_name:
             raise ValueError(f"duplicate camera name {name!r} at cam_{cam:02d} and cam_{cam_by_name[name]:02d}")
         cam_by_name[name] = cam
@@ -162,21 +135,21 @@ def main(args: Config) -> None:
     decoders, sample_times = [], []
     for index, coverage_name in enumerate(COVERAGE_NAMES):
         entity = f"/world/rig_00/cam_{cam_by_name[coverage_name]:02d}"
-        distortion_model = static_value(dataset, f"{entity}/pinhole", "simplecv.components.DistortionModel")
+        distortion_model = static_str(dataset, f"{entity}/pinhole", "simplecv.components.DistortionModel")
         if distortion_model != "kannala_brandt":
             raise ValueError(f"{entity}: unsupported distortion model {distortion_model!r} (driver maps only kannala_brandt -> KB4)")
-        distortion = np.asarray(static_value(dataset, f"{entity}/pinhole", "simplecv.components.DistortionCoefficients"), dtype=np.float64)
+        distortion = static_array(dataset, f"{entity}/pinhole", "simplecv.components.DistortionCoefficients")
         if not np.allclose(distortion[4:], 0.0):
             raise ValueError(f"{entity}: KB4 supports 4 coefficients, got non-zero tail {distortion[4:]}")
-        relation = int(np.asarray(static_value(dataset, entity, "Transform3D:relation")).ravel()[0])
+        relation = int(static_array(dataset, entity, "Transform3D:relation")[0])
         # log_pinhole writes from_parent=True (TransformRelation.ChildFromParent = 2);
         # the inversion below is only correct for that convention — refuse anything else.
         if relation != 2:
             raise ValueError(f"{entity}: Transform3D relation {relation} is not ChildFromParent(2); refusing to invert blindly")
-        k_matrix: Float64[ndarray, "3 3"] = np.asarray(static_value(dataset, f"{entity}/pinhole", "Pinhole:image_from_camera"), dtype=np.float64).reshape(3, 3, order="F")
-        resolution = np.asarray(static_value(dataset, f"{entity}/pinhole", "Pinhole:resolution"), dtype=np.float64).ravel()
-        cam_R_imu: Float64[ndarray, "3 3"] = np.asarray(static_value(dataset, entity, "Transform3D:mat3x3"), dtype=np.float64).reshape(3, 3, order="F")
-        cam_t_imu: Float64[ndarray, "3"] = np.asarray(static_value(dataset, entity, "Transform3D:translation"), dtype=np.float64).ravel()
+        k_matrix: Float64[ndarray, "3 3"] = static_array(dataset, f"{entity}/pinhole", "Pinhole:image_from_camera").reshape(3, 3, order="F")
+        resolution = static_array(dataset, f"{entity}/pinhole", "Pinhole:resolution")
+        cam_R_imu: Float64[ndarray, "3 3"] = static_array(dataset, entity, "Transform3D:mat3x3").reshape(3, 3, order="F")
+        cam_t_imu: Float64[ndarray, "3"] = static_array(dataset, entity, "Transform3D:translation")
         T_imu_cam: Float64[ndarray, "4 4"] = np.eye(4)
         T_imu_cam[:3, :3] = cam_R_imu.T
         T_imu_cam[:3, 3] = -cam_R_imu.T @ cam_t_imu
@@ -202,7 +175,7 @@ def main(args: Config) -> None:
             .sort("video_time")
             .to_arrow_table()
         )
-        times_ns: Int64[ndarray, "n_samples"] = np.array([t.value for t in table[0]], dtype=np.int64)
+        times_ns: Int64[ndarray, "n_samples"] = table[0].combine_chunks().cast(pa.int64()).to_numpy()
         # large_list: a long session's samples exceed 2 GiB per camera, overflowing
         # the default int32 offsets on combine_chunks.
         blobs = table[1].cast(pa.list_(pa.large_list(pa.uint8()))).combine_chunks().flatten()
@@ -210,7 +183,10 @@ def main(args: Config) -> None:
         offsets = blobs.offsets.to_pylist()
         samples = [bytes(data[start:end]) for start, end in zip(offsets[:-1], offsets[1:], strict=True)]
         keyframes = [bool(flag) for flag in table[2].combine_chunks().flatten().to_pylist()]
-        decoders.append(VideoDecoder(wrap_mp4(samples, keyframes, 30), device="cuda", seek_mode="exact", num_ffmpeg_threads=0))
+        decoder = VideoDecoder(wrap_mp4(samples, keyframes, 30), device="cuda", seek_mode="exact", num_ffmpeg_threads=0)
+        if decoder.cpu_fallback:
+            raise RuntimeError(f"cam {index} ({coverage_name}): torchcodec fell back to CPU decode; NVDEC is required")
+        decoders.append(decoder)
         sample_times.append(times_ns)
         print(f"cam {index} ({coverage_name}): {len(times_ns)} samples", flush=True)
 
@@ -235,12 +211,7 @@ def main(args: Config) -> None:
     imu_cursor = 0
     started = time.monotonic()
     for count, (timestamp_ns, selected) in enumerate(framesets):
-        # IMU leads the frame by one sample: the backend integrates up to the frame
-        # time and (in deterministic mode) push_img blocks until it can.
-        while imu_cursor < len(imu) and (imu_cursor == 0 or imu[imu_cursor - 1][0] <= timestamp_ns):
-            t_ns, gyro_xyz, accel_xyz = imu[imu_cursor]
-            tracker.push_imu(int(t_ns), gyro_xyz, accel_xyz)
-            imu_cursor += 1
+        imu_cursor = feed_imu_lead(tracker, imu, imu_cursor, timestamp_ns)
         for camera, frame_index in enumerate(selected):
             rgb = decoders[camera].get_frame_at(frame_index).data.float()  # uint8 CHW on cuda
             # BT.601 full-range luma: matches swscale's gray8 conversion to ~0.5 LSB
@@ -249,7 +220,7 @@ def main(args: Config) -> None:
             gray = torch.nn.functional.avg_pool2d(luma, args.downscale).round().clamp(0, 255).to(torch.uint8)  # exact box average == SWS_AREA
             image_hw: UInt8[ndarray, "h w"] = np.ascontiguousarray(gray[0, 0].cpu().numpy())
             tracker.push_img(camera, timestamp_ns, image_hw)
-        poses.extend(tracker.poses())
+        poses.extend(tracker.drain_poses())
         if count % 100 == 0:
             print(f"frameset {count}/{len(framesets)}, {len(poses)} poses, {time.monotonic() - started:.1f}s", flush=True)
 
@@ -259,7 +230,7 @@ def main(args: Config) -> None:
     for _ in range(600):
         if len(poses) >= len(framesets):
             break
-        drained = list(tracker.poses())
+        drained = list(tracker.drain_poses())
         poses.extend(drained)
         if not drained:
             time.sleep(0.05)
