@@ -35,7 +35,7 @@ from rerun.catalog import DatasetEntry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from robocap_feed import CAMERA_TO_IMU_OFFSET_NS, ImuSamples, build_framesets, feed_imu_lead  # noqa: E402
+from robocap_feed import CAMERA_TO_IMU_OFFSET_NS, FrameStamp, Frameset, ImuSample, ImuSamples, build_framesets, feed_imu_lead  # noqa: E402
 from vit_binding import PoseTuple, Tracker  # noqa: E402
 
 COVERAGE_NAMES: tuple[str, ...] = ("left", "left_front", "right_front", "right")
@@ -225,10 +225,10 @@ def main(args: Config) -> None:
     assert np.all(np.diff(gyro_t) > 0), "gyro timestamps must be strictly increasing after dedup"
     accel_interp: Float64[ndarray, "n_gyro 3"] = np.column_stack([np.interp(gyro_t, accel_t, accel[:, axis]) for axis in range(3)])
     inside: Bool[ndarray, "n_gyro"] = (gyro_t >= accel_t[0]) & (gyro_t < accel_t[-1])
-    imu: ImuSamples = list(zip(gyro_t[inside].tolist(), gyro[inside], accel_interp[inside], strict=True))
+    imu: ImuSamples = [ImuSample(t_ns, gyro_xyz, accel_xyz) for t_ns, gyro_xyz, accel_xyz in zip(gyro_t[inside].tolist(), gyro[inside], accel_interp[inside], strict=True)]
     print(f"{len(imu)} paired IMU samples", flush=True)
 
-    framesets: list[tuple[int, list[int]]] = build_framesets([[(i, int(t)) for i, t in enumerate(times)] for times in sample_times])
+    framesets: list[Frameset] = build_framesets([[FrameStamp(i, int(t)) for i, t in enumerate(times)] for times in sample_times])
     print(f"{len(framesets)} complete framesets", flush=True)
 
     tracker.start()

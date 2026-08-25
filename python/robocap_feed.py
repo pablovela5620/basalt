@@ -9,6 +9,8 @@ import the catalog stack (rerun/pyarrow/torch).
 
 from __future__ import annotations
 
+from typing import NamedTuple, TypeAlias
+
 from jaxtyping import Float64
 from numpy import ndarray
 
@@ -17,32 +19,61 @@ from vit_binding import Tracker
 CAMERA_TO_IMU_OFFSET_NS = 14_902_432  # basalt kCameraToImuOffsetNs (dataset_io_robocap.cpp)
 FRAMESET_TOLERANCE_NS = 1_000_000
 
-ImuSamples = list[tuple[int, Float64[ndarray, "3"], Float64[ndarray, "3"]]]
-"""Paired (t_ns, gyro_xyz rad/s, accel_xyz m/s^2) rows on the tracker clock."""
+
+class FrameStamp(NamedTuple):
+    """One camera frame as seen by the synchronizer."""
+
+    opaque_id: int
+    """Per-camera handle for fetching the pixels later: a pts for file feeds, a decode index for the catalog feed."""
+    t_ns: int
+    """Capture timestamp on the camera clock."""
 
 
-def build_framesets(camera_frames: list[list[tuple[int, int]]]) -> list[tuple[int, list[int]]]:
+class Frameset(NamedTuple):
+    """One synchronized multi-camera capture."""
+
+    t_ns: int
+    """Median camera timestamp shifted onto the IMU clock."""
+    frame_indices: list[int]
+    """Index into each camera's frame list, in camera order."""
+
+
+class ImuSample(NamedTuple):
+    """One paired IMU reading on the tracker clock."""
+
+    t_ns: int
+    """Sample timestamp."""
+    gyro_xyz: Float64[ndarray, "3"]
+    """Angular velocity, rad/s."""
+    accel_xyz: Float64[ndarray, "3"]
+    """Linear acceleration (interpolated onto the gyro timestamp), m/s^2."""
+
+
+ImuSamples: TypeAlias = list[ImuSample]
+"""Time-ordered paired IMU rows."""
+
+
+def build_framesets(camera_frames: list[list[FrameStamp]]) -> list[Frameset]:
     """Mirror the basalt reader: anchor camera 0, nearest match per camera, median + offset.
 
-    Each camera's frames are (opaque_id, timestamp_ns) in time order; the opaque
-    id is not used here (a pts for file feeds, a decode index for the catalog feed).
-    Returns (timestamp_ns_on_imu_clock, per-camera frame index) per complete frameset.
+    Each camera's frames must be in time order. A frameset is complete only when
+    every camera has a frame within FRAMESET_TOLERANCE_NS of the anchor's.
     """
-    framesets: list[tuple[int, list[int]]] = []
+    framesets: list[Frameset] = []
     cursors: list[int] = [0] * len(camera_frames)
-    for anchor_index, (_, anchor_ns) in enumerate(camera_frames[0]):
+    for anchor_index, anchor in enumerate(camera_frames[0]):
         selected: list[int] = [anchor_index]
         complete: bool = True
         for camera in range(1, len(camera_frames)):
-            frames: list[tuple[int, int]] = camera_frames[camera]
+            frames: list[FrameStamp] = camera_frames[camera]
             index: int = cursors[camera]
             if index >= len(frames):
                 complete = False
                 break
-            while index + 1 < len(frames) and abs(frames[index + 1][1] - anchor_ns) <= abs(frames[index][1] - anchor_ns):
+            while index + 1 < len(frames) and abs(frames[index + 1].t_ns - anchor.t_ns) <= abs(frames[index].t_ns - anchor.t_ns):
                 index += 1
-            if abs(frames[index][1] - anchor_ns) > FRAMESET_TOLERANCE_NS:
-                if frames[index][1] < anchor_ns:
+            if abs(frames[index].t_ns - anchor.t_ns) > FRAMESET_TOLERANCE_NS:
+                if frames[index].t_ns < anchor.t_ns:
                     cursors[camera] = index + 1
                 complete = False
                 break
@@ -50,10 +81,10 @@ def build_framesets(camera_frames: list[list[tuple[int, int]]]) -> list[tuple[in
             selected.append(index)
         if not complete:
             continue
-        times: list[int] = sorted(camera_frames[camera][selected[camera]][1] for camera in range(len(camera_frames)))
+        times: list[int] = sorted(camera_frames[camera][selected[camera]].t_ns for camera in range(len(camera_frames)))
         middle: int = len(times) // 2
         median: int = times[middle] if len(times) % 2 == 1 else times[middle - 1] + (times[middle] - times[middle - 1]) // 2
-        framesets.append((median + CAMERA_TO_IMU_OFFSET_NS, selected))
+        framesets.append(Frameset(median + CAMERA_TO_IMU_OFFSET_NS, selected))
     return framesets
 
 
@@ -64,8 +95,8 @@ def feed_imu_lead(tracker: Tracker, imu: ImuSamples, cursor: int, frame_t_ns: in
     push_img blocks until it can — feeding only samples <= frame_t_ns deadlocks
     on the very first frameset.
     """
-    while cursor < len(imu) and (cursor == 0 or imu[cursor - 1][0] <= frame_t_ns):
-        t_ns, gyro_xyz, accel_xyz = imu[cursor]
-        tracker.push_imu(int(t_ns), gyro_xyz, accel_xyz)
+    while cursor < len(imu) and (cursor == 0 or imu[cursor - 1].t_ns <= frame_t_ns):
+        sample: ImuSample = imu[cursor]
+        tracker.push_imu(sample.t_ns, sample.gyro_xyz, sample.accel_xyz)
         cursor += 1
     return cursor
