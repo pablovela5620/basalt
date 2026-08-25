@@ -193,6 +193,7 @@ tyro = "*"
 pytorch-gpu = "*"
 torchcodec = "*"
 pyarrow = "*"
+jaxtyping = ">=0.3.11,<0.4"
 
 [feature.driver.pypi-dependencies]
 rerun-sdk = { version = "==0.36.*", extras = ["datafusion"] }
@@ -214,7 +215,7 @@ depends-on = ["_build-norerun"]
 # timestamps agree with the file reader to 1 ns; the gap is decode-path only.
 description = "Step-B gate: catalog+NVDEC VIT driver vs the golden trajectory (decoder equivalence, 10 cm)"
 args = [{ arg = "rrd" }]
-cmd = "python python/drive_catalog.py --lib build-norerun/libbasalt.so --rrd {{ rrd }} --output datasets/vit_catalog_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_catalog_trajectory.csv --tolerance-m 0.10"
+cmd = "python python/drive_catalog.py --lib build-norerun/libbasalt.so --vit-config python/robocap_vit.toml --rrd {{ rrd }} --output datasets/vit_catalog_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_catalog_trajectory.csv --tolerance-m 0.10"
 depends-on = ["_build-norerun"]
 
 [environments]
