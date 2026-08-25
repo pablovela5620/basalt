@@ -144,9 +144,9 @@ def load(lib_path: Path) -> ctypes.CDLL:
     must not resolve against the pyarrow/datafusion copy already loaded when the
     driver also imports the rerun Python SDK.
     """
-    lib = ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_LOCAL | os.RTLD_DEEPBIND)
-    tracker_p = ctypes.c_void_p
-    pose_p = ctypes.c_void_p
+    lib: ctypes.CDLL = ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_LOCAL | os.RTLD_DEEPBIND)
+    tracker_p: type[ctypes.c_void_p] = ctypes.c_void_p
+    pose_p: type[ctypes.c_void_p] = ctypes.c_void_p
     signatures: dict[str, tuple[list, object]] = {
         "vit_api_get_version": ([ctypes.POINTER(ctypes.c_uint32)] * 3, ctypes.c_int),
         "vit_tracker_create": ([ctypes.POINTER(Config), ctypes.POINTER(tracker_p)], ctypes.c_int),
@@ -181,7 +181,7 @@ class Tracker:
     """Thin ownership wrapper over one vit_tracker_t."""
 
     def __init__(self, lib_path: Path, config_file: str | None, cam_count: int) -> None:
-        self.lib = load(lib_path)
+        self.lib: ctypes.CDLL = load(lib_path)
         major, minor, patch = (ctypes.c_uint32(), ctypes.c_uint32(), ctypes.c_uint32())
         check(self.lib.vit_api_get_version(ctypes.byref(major), ctypes.byref(minor), ctypes.byref(patch)), "get_version")
         if major.value != 2:  # every struct layout here mirrors vit_interface.h 2.x
