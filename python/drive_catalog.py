@@ -46,7 +46,20 @@ IMU_NOISE = {"gyro_noise_std": 0.0007300442812547, "gyro_bias_std": 3.4453970831
 IMU_UPDATE_RATE = 200.0
 
 
-def wrap_mp4(samples: list[bytes], keyframes: list[bool], fps: int) -> bytes:
+def sample_views(column: pa.ChunkedArray) -> list[UInt8[ndarray, "size"]]:
+    """Zero-copy views, one per encoded sample, from a ``VideoStream:sample`` column.
+
+    Arrow has no ``list<u8> -> binary`` cast, so slice the child data by the list
+    offsets ourselves. The ``large_list`` cast keeps 64-bit offsets — a two-hour
+    session exceeds the default int32's 2 GiB per camera.
+    """
+    blobs = column.cast(pa.list_(pa.large_list(pa.uint8()))).combine_chunks().flatten()
+    data: UInt8[ndarray, "total"] = blobs.values.to_numpy(zero_copy_only=True)
+    offsets: Int64[ndarray, "n_offsets"] = blobs.offsets.to_numpy(zero_copy_only=True)
+    return [data[start:end] for start, end in zip(offsets[:-1], offsets[1:], strict=True)]
+
+
+def wrap_mp4(samples: list[UInt8[ndarray, "size"]], keyframes: list[bool], fps: int) -> bytes:
     """Mux pre-encoded H.264 samples into an in-memory MP4 (simplecv's add_mux_stream technique)."""
     buffer = BytesIO()
     with av.open(buffer, "w", format="mp4", options={"video_track_timescale": str(fps)}) as container:
@@ -187,12 +200,7 @@ def main(args: Config) -> None:
             .to_arrow_table()
         )
         times_ns: Int64[ndarray, "n_samples"] = table[0].combine_chunks().cast(pa.int64()).to_numpy()
-        # large_list: a long session's samples exceed 2 GiB per camera, overflowing
-        # the default int32 offsets on combine_chunks.
-        blobs = table[1].cast(pa.list_(pa.large_list(pa.uint8()))).combine_chunks().flatten()
-        data = memoryview(blobs.flatten().buffers()[1])
-        offsets = blobs.offsets.to_pylist()
-        samples = [bytes(data[start:end]) for start, end in zip(offsets[:-1], offsets[1:], strict=True)]
+        samples = sample_views(table[1])
         keyframes = [bool(flag) for flag in table[2].combine_chunks().flatten().to_pylist()]
         decoder = VideoDecoder(wrap_mp4(samples, keyframes, 30), device="cuda", seek_mode="exact", num_ffmpeg_threads=0)
         if decoder.cpu_fallback:
