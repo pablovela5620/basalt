@@ -299,8 +299,8 @@ class Tracker:
         )
         check(self.lib.vit_tracker_push_img_sample(self._handle, ctypes.byref(sample)), "push_img")
 
-    def poses(self) -> Iterator[PoseTuple]:
-        """Drain currently available poses as (t_ns, px, py, pz, qw, qx, qy, qz)."""
+    def drain_poses(self) -> Iterator[PoseTuple]:
+        """Pop and consume all currently available poses as (t_ns, px, py, pz, qw, qx, qy, qz)."""
         while True:
             pose: ctypes.c_void_p = ctypes.c_void_p()
             check(self.lib.vit_tracker_pop_pose(self._handle, ctypes.byref(pose)), "pop_pose")

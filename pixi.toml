@@ -99,6 +99,10 @@ _configure = { cmd = "cmake --preset development -DCMAKE_PREFIX_PATH=$CONDA_PREF
 build = { cmd = "cmake --build build --target basalt_vio -j", depends-on = ["_configure"], description = "Fetch submodules, configure, and compile basalt_vio" }
 # Everything (lib + all executables): `pixi run _build-all`.
 _build-all = { cmd = "cmake --build build -j", depends-on = ["_configure"] }
+# libbasalt.so without the Rerun SDK: its bundled arrow collides with the driver's
+# in-process pyarrow. Workspace-level (not a driver-feature task) so it runs in
+# the default env, where the compilers and mold live — the driver env has none.
+_build-norerun = "cmake --preset development -B build-norerun -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DBUILD_PANGOLIN_LIBRAW=OFF -DBASALT_ENABLE_RERUN=OFF && cmake --build build-norerun --target basalt -j"
 
 # Shared Rerun layout for any basalt_vio recording; camera views match the calibration.
 _blueprint = { cmd = "python scripts/rerun/basalt_vio_blueprint.py --output {{ output }} --calibration {{ calibration }}", args = ["output", "calibration"] }
@@ -201,13 +205,10 @@ rerun-sdk = { version = "==0.36.*", extras = ["datafusion"] }
 # TODO(gates): the golden csv is a machine-local artifact from the original
 # basalt_vio spike run; regenerate it via _robocap-vio (needs a TUM->ns/qw-first
 # converter) to make these gates runnable from a clean checkout.
-[feature.driver.tasks._build-norerun]
-cmd = "cmake --preset development -B build-norerun -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DBUILD_PANGOLIN_LIBRAW=OFF -DBASALT_ENABLE_RERUN=OFF && cmake --build build-norerun --target basalt -j"
-
 [feature.driver.tasks.vit-golden]
 description = "Step-A gate: file-fed VIT driver vs the basalt_vio golden trajectory (binding fidelity, 5 cm)"
 cmd = "python python/drive_files.py --lib build-norerun/libbasalt.so --output datasets/vit_files_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_files_trajectory.csv"
-depends-on = ["_build-norerun"]
+depends-on = [{ task = "_build-norerun", environment = "default" }]
 
 [feature.driver.tasks.vit-golden-catalog]
 # 10 cm: the NVDEC+RGB-roundtrip pixels differ from swscale gray8 by ~0.5 LSB,
@@ -216,7 +217,7 @@ depends-on = ["_build-norerun"]
 description = "Step-B gate: catalog+NVDEC VIT driver vs the golden trajectory (decoder equivalence, 10 cm)"
 args = [{ arg = "rrd" }]
 cmd = "python python/drive_catalog.py --lib build-norerun/libbasalt.so --vit-config python/robocap_vit.toml --rrd {{ rrd }} --output datasets/vit_catalog_trajectory.csv && python python/golden_compare.py /tmp/robocap-slam-test/traj_s15_vga.csv datasets/vit_catalog_trajectory.csv --tolerance-m 0.10"
-depends-on = ["_build-norerun"]
+depends-on = [{ task = "_build-norerun", environment = "default" }]
 
 [environments]
 driver = { features = ["driver"], no-default-feature = true }
