@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -22,15 +23,15 @@ from pathlib import Path
 import av
 import numpy as np
 import tyro
-from jaxtyping import Float64, UInt8
+from jaxtyping import Bool, Float64, Int64, UInt8
 from numpy import ndarray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import basalt_convert_robocap_calib as calib_converter  # noqa: E402
-from robocap_feed import build_framesets, feed_imu_lead  # noqa: E402
-from vit_binding import Tracker  # noqa: E402
+from robocap_feed import ImuSamples, build_framesets, feed_imu_lead  # noqa: E402
+from vit_binding import PoseTuple, Tracker  # noqa: E402
 
 GYRO_SCALE = 0.000266316
 ACCEL_SCALE = 0.001197101
@@ -40,13 +41,13 @@ COVERAGE_DEVICES = ((4, "left"), (1, "left-front"), (5, "right-front"), (3, "rig
 def index_video(path: Path) -> list[tuple[int, int]]:
     """(pts, timestamp_ns) per packet; timestamp = comment epoch + pts, no offset."""
     with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        comment = container.metadata.get("comment") or stream.metadata.get("comment")
+        stream: av.VideoStream = container.streams.video[0]
+        comment: str | None = container.metadata.get("comment") or stream.metadata.get("comment")
         if comment is None:
             raise ValueError(f"Missing absolute timestamp comment in {path}")
-        epoch_ns = int(comment) * 1_000
-        time_base = stream.time_base
-        frames = [
+        epoch_ns: int = int(comment) * 1_000
+        time_base: Fraction = stream.time_base
+        frames: list[tuple[int, int]] = [
             (packet.pts, epoch_ns + int(packet.pts * time_base * Fraction(1_000_000_000)))
             for packet in container.demux(stream)
             if packet.pts is not None
@@ -56,34 +57,36 @@ def index_video(path: Path) -> list[tuple[int, int]]:
     return frames
 
 
-def load_imu(session_dir: Path, session: int) -> list[tuple[int, Float64[ndarray, "3"], Float64[ndarray, "3"]]]:
+def load_imu(session_dir: Path, session: int) -> ImuSamples:
     """Paired (t_ns, gyro_xyz, accel_xyz) rows: accel interpolated onto gyro times."""
-    channels: dict[str, list[np.ndarray]] = {"gyro_data": [], "acc_data": []}
+    channels: dict[str, list[Int64[ndarray, "rows 4"]]] = {"gyro_data": [], "acc_data": []}
     for db_path in sorted(session_dir.glob(f"IMUWriter_dev0_session{session}_segment*.db")):
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as database:
             for table, parts in channels.items():
-                rows = database.execute(f"SELECT x, y, z, timestamp FROM {table}").fetchall()
+                rows: list[tuple[int, int, int, int]] = database.execute(f"SELECT x, y, z, timestamp FROM {table}").fetchall()
                 parts.append(np.asarray(rows, dtype=np.int64))
-    merged: dict[str, np.ndarray] = {}
+    merged: dict[str, Int64[ndarray, "rows 4"]] = {}
     for table, parts in channels.items():
-        raw = np.concatenate(parts)
+        raw: Int64[ndarray, "rows 4"] = np.concatenate(parts)
         raw = raw[np.argsort(raw[:, 3], kind="stable")]
-        keep = np.ones(len(raw), dtype=bool)
+        keep: Bool[ndarray, "rows"] = np.ones(len(raw), dtype=bool)
         keep[1:] = raw[1:, 3] != raw[:-1, 3]  # sort_and_deduplicate keeps the first
         merged[table] = raw[keep]
-    gyro, accel = merged["gyro_data"], merged["acc_data"]
+    gyro: Int64[ndarray, "n_gyro 4"] = merged["gyro_data"]
+    accel: Int64[ndarray, "n_accel 4"] = merged["acc_data"]
 
-    paired: list[tuple[int, np.ndarray, np.ndarray]] = []
-    accel_index = 0
+    paired: ImuSamples = []
+    accel_index: int = 0
     for t_ns, value in zip(gyro[:, 3], gyro[:, :3].astype(np.float64), strict=True):
         while accel_index + 1 < len(accel) and accel[accel_index + 1, 3] < t_ns:
             accel_index += 1
         if t_ns < accel[accel_index, 3] or accel_index + 1 >= len(accel):
             continue
-        before, after = accel[accel_index], accel[accel_index + 1]
-        interval = float(after[3] - before[3])
-        alpha = 0.0 if interval == 0.0 else float(t_ns - before[3]) / interval
-        interpolated = before[:3].astype(np.float64) + alpha * (after[:3] - before[:3]).astype(np.float64)
+        before: Int64[ndarray, "4"] = accel[accel_index]
+        after: Int64[ndarray, "4"] = accel[accel_index + 1]
+        interval: float = float(after[3] - before[3])
+        alpha: float = 0.0 if interval == 0.0 else float(t_ns - before[3]) / interval
+        interpolated: Float64[ndarray, "3"] = before[:3].astype(np.float64) + alpha * (after[:3] - before[:3]).astype(np.float64)
         paired.append((int(t_ns), value * GYRO_SCALE, interpolated * ACCEL_SCALE))
     print(f"{len(paired)} paired IMU samples")
     return paired
@@ -93,11 +96,11 @@ class SequentialDecoder:
     """Decode one camera's frames in frameset order (strictly increasing pts)."""
 
     def __init__(self, path: Path, downscale: int) -> None:
-        self.container = av.open(str(path))
-        self.stream = self.container.streams.video[0]
-        self.decoder = self.container.decode(self.stream)
-        self.downscale = downscale
-        self.reformatter = av.video.reformatter.VideoReformatter()
+        self.container: av.container.InputContainer = av.open(str(path))
+        self.stream: av.VideoStream = self.container.streams.video[0]
+        self.decoder: Iterator[av.VideoFrame] = self.container.decode(self.stream)
+        self.downscale: int = downscale
+        self.reformatter: av.video.reformatter.VideoReformatter = av.video.reformatter.VideoReformatter()
         self.current: av.VideoFrame | None = None
 
     def frame_at(self, pts: int) -> UInt8[ndarray, "h w"]:
@@ -105,9 +108,9 @@ class SequentialDecoder:
             self.current = next(self.decoder)
         if self.current.pts != pts:
             raise ValueError(f"Decoder missed pts {pts} (at {self.current.pts})")
-        target_width = max(self.current.width // self.downscale, 1)
-        target_height = max(self.current.height // self.downscale, 1)
-        gray = self.reformatter.reformat(
+        target_width: int = max(self.current.width // self.downscale, 1)
+        target_height: int = max(self.current.height // self.downscale, 1)
+        gray: av.VideoFrame = self.reformatter.reformat(
             self.current,
             width=target_width,
             height=target_height,
@@ -136,13 +139,13 @@ class Config:
 
 
 def main(args: Config) -> None:
-    session = int(args.session_dir.name.rsplit("_", 1)[1])
-    calibration = calib_converter.convert(args.factory_dir, calib_converter.COVERAGE_CAMERA_SOURCES, args.downscale)["value0"]
+    session: int = int(args.session_dir.name.rsplit("_", 1)[1])
+    calibration: dict = calib_converter.convert(args.factory_dir, calib_converter.COVERAGE_CAMERA_SOURCES, args.downscale)["value0"]
 
     frames_per_camera: list[list[tuple[int, int]]] = []
     videos: list[list[Path]] = []
     for device, position in COVERAGE_DEVICES:
-        paths = sorted(args.session_dir.glob(f"video_dev{device}_session{session}_segment*_{position}.mp4"))
+        paths: list[Path] = sorted(args.session_dir.glob(f"video_dev{device}_session{session}_segment*_{position}.mp4"))
         if not paths:
             raise FileNotFoundError(f"No videos for dev{device} {position}")
         videos.append(paths)
@@ -151,25 +154,25 @@ def main(args: Config) -> None:
             indexed.extend(index_video(path))
         indexed.sort(key=lambda frame: frame[1])
         frames_per_camera.append(indexed)
-    framesets = build_framesets(frames_per_camera)
+    framesets: list[tuple[int, list[int]]] = build_framesets(frames_per_camera)
     print(f"{len(framesets)} complete framesets")
-    imu = load_imu(args.session_dir, session)
+    imu: ImuSamples = load_imu(args.session_dir, session)
 
-    tracker = Tracker(args.lib, str(args.vit_config), cam_count=len(COVERAGE_DEVICES))
+    tracker: Tracker = Tracker(args.lib, str(args.vit_config), cam_count=len(COVERAGE_DEVICES))
     for index, (transform, intrinsics, resolution) in enumerate(
         zip(calibration["T_imu_cam"], calibration["intrinsics"], calibration["resolution"], strict=True)
     ):
-        values = intrinsics["intrinsics"]
-        quaternion = np.array([transform["qx"], transform["qy"], transform["qz"], transform["qw"]])
+        values: dict = intrinsics["intrinsics"]
+        quaternion: Float64[ndarray, "4"] = np.array([transform["qx"], transform["qy"], transform["qz"], transform["qw"]])
         x, y, z, w = quaternion
-        rotation = np.array(
+        rotation: Float64[ndarray, "3 3"] = np.array(
             [
                 [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
                 [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
                 [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
             ]
         )
-        T_imu_cam = np.eye(4)
+        T_imu_cam: Float64[ndarray, "4 4"] = np.eye(4)
         T_imu_cam[:3, :3] = rotation
         T_imu_cam[:3, 3] = [transform["px"], transform["py"], transform["pz"]]
         tracker.add_camera_calibration(
@@ -193,18 +196,18 @@ def main(args: Config) -> None:
     )
     tracker.start()
 
-    decoders = [SequentialDecoder(paths[0], args.downscale) for paths in videos]
+    decoders: list[SequentialDecoder] = [SequentialDecoder(paths[0], args.downscale) for paths in videos]
     if any(len(paths) > 1 for paths in videos):
         raise NotImplementedError("multi-segment sessions need per-segment decoder rollover")
 
-    poses: list[tuple[int, float, float, float, float, float, float, float]] = []
-    imu_cursor = 0
-    started = time.monotonic()
+    poses: list[PoseTuple] = []
+    imu_cursor: int = 0
+    started: float = time.monotonic()
     for count, (timestamp_ns, selected) in enumerate(framesets):
         imu_cursor = feed_imu_lead(tracker, imu, imu_cursor, timestamp_ns)
         for camera, frame_index in enumerate(selected):
-            pts = frames_per_camera[camera][frame_index][0]
-            image = np.ascontiguousarray(decoders[camera].frame_at(pts))
+            pts: int = frames_per_camera[camera][frame_index][0]
+            image: UInt8[ndarray, "h w"] = np.ascontiguousarray(decoders[camera].frame_at(pts))
             tracker.push_img(camera, timestamp_ns, image)
         poses.extend(tracker.drain_poses())  # deterministic mode fills a bounded queue
         if count % 100 == 0:

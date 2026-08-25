@@ -29,13 +29,13 @@ def build_framesets(camera_frames: list[list[tuple[int, int]]]) -> list[tuple[in
     Returns (timestamp_ns_on_imu_clock, per-camera frame index) per complete frameset.
     """
     framesets: list[tuple[int, list[int]]] = []
-    cursors = [0] * len(camera_frames)
+    cursors: list[int] = [0] * len(camera_frames)
     for anchor_index, (_, anchor_ns) in enumerate(camera_frames[0]):
-        selected = [anchor_index]
-        complete = True
+        selected: list[int] = [anchor_index]
+        complete: bool = True
         for camera in range(1, len(camera_frames)):
-            frames = camera_frames[camera]
-            index = cursors[camera]
+            frames: list[tuple[int, int]] = camera_frames[camera]
+            index: int = cursors[camera]
             if index >= len(frames):
                 complete = False
                 break
@@ -50,9 +50,9 @@ def build_framesets(camera_frames: list[list[tuple[int, int]]]) -> list[tuple[in
             selected.append(index)
         if not complete:
             continue
-        times = sorted(camera_frames[camera][selected[camera]][1] for camera in range(len(camera_frames)))
-        middle = len(times) // 2
-        median = times[middle] if len(times) % 2 == 1 else times[middle - 1] + (times[middle] - times[middle - 1]) // 2
+        times: list[int] = sorted(camera_frames[camera][selected[camera]][1] for camera in range(len(camera_frames)))
+        middle: int = len(times) // 2
+        median: int = times[middle] if len(times) % 2 == 1 else times[middle - 1] + (times[middle] - times[middle - 1]) // 2
         framesets.append((median + CAMERA_TO_IMU_OFFSET_NS, selected))
     return framesets
 
