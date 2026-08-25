@@ -63,23 +63,31 @@ def wrap_mp4(samples: list[bytes], keyframes: list[bool], fps: int) -> bytes:
     return buffer.getvalue()
 
 
-def _static_cell(dataset, entity: str, column: str) -> pa.Scalar:
-    """The single static cell for one component, or ValueError when absent."""
-    table = dataset.filter_contents(entity).reader(index=None).select(f"{entity}:{column}").to_arrow_table()
-    if table.num_rows == 0:
-        raise ValueError(f"no static row for {entity}:{column}")
-    return table[0][0]
+def read_statics(dataset, entities: list[str]) -> pa.Table:
+    """Every static component of the given entities in one round-trip: a single row, one ``entity:component`` column each."""
+    return dataset.filter_contents(entities).reader(index=None).to_arrow_table()
 
 
-def static_array(dataset, entity: str, column: str) -> Float64[ndarray, "n"]:
+def _static_cell(statics: pa.Table, entity: str, column: str) -> pa.Scalar:
+    """The static cell for one component, or ValueError when the recording lacks it."""
+    name = f"{entity}:{column}"
+    if name not in statics.column_names:
+        raise ValueError(f"no static column {name}")
+    cell = statics[name][0]
+    if not cell.is_valid:
+        raise ValueError(f"static column {name} is null")
+    return cell
+
+
+def static_array(statics: pa.Table, entity: str, column: str) -> Float64[ndarray, "n"]:
     """One static list component as a flat float64 array (matrices arrive column-major)."""
-    cell = _static_cell(dataset, entity, column)
+    cell = _static_cell(statics, entity, column)
     return np.asarray(cell.values.to_pylist(), dtype=np.float64).ravel()
 
 
-def static_str(dataset, entity: str, column: str) -> str:
+def static_str(statics: pa.Table, entity: str, column: str) -> str:
     """One static string component (bare, or wrapped in a single-element list)."""
-    cell = _static_cell(dataset, entity, column)
+    cell = _static_cell(statics, entity, column)
     value = cell.values.to_pylist()[0] if isinstance(cell, (pa.ListScalar, pa.LargeListScalar)) else cell.as_py()
     if not isinstance(value, str):
         raise ValueError(f"{entity}:{column} is not a string: {value!r}")
@@ -120,10 +128,13 @@ def main(args: Config) -> None:
     server = rr.server.Server(datasets={"drive": [str(args.rrd)]})
     dataset = server.client().get_dataset("drive")
 
-    num_cameras = int(static_array(dataset, "/world/rig_00", "num_cameras")[0])
+    rig = "/world/rig_00"
+    num_cameras = int(static_array(read_statics(dataset, [rig]), rig, "num_cameras")[0])
+    cam_entities = [f"{rig}/cam_{cam:02d}" for cam in range(num_cameras)]
+    statics: pa.Table = read_statics(dataset, cam_entities + [f"{entity}/pinhole" for entity in cam_entities])
     cam_by_name: dict[str, int] = {}
     for cam in range(num_cameras):
-        name = static_str(dataset, f"/world/rig_00/cam_{cam:02d}", "name").replace("-", "_")
+        name = static_str(statics, f"{rig}/cam_{cam:02d}", "name").replace("-", "_")
         if name in cam_by_name:
             raise ValueError(f"duplicate camera name {name!r} at cam_{cam:02d} and cam_{cam_by_name[name]:02d}")
         cam_by_name[name] = cam
@@ -135,21 +146,21 @@ def main(args: Config) -> None:
     decoders, sample_times = [], []
     for index, coverage_name in enumerate(COVERAGE_NAMES):
         entity = f"/world/rig_00/cam_{cam_by_name[coverage_name]:02d}"
-        distortion_model = static_str(dataset, f"{entity}/pinhole", "simplecv.components.DistortionModel")
+        distortion_model = static_str(statics, f"{entity}/pinhole", "simplecv.components.DistortionModel")
         if distortion_model != "kannala_brandt":
             raise ValueError(f"{entity}: unsupported distortion model {distortion_model!r} (driver maps only kannala_brandt -> KB4)")
-        distortion = static_array(dataset, f"{entity}/pinhole", "simplecv.components.DistortionCoefficients")
+        distortion = static_array(statics, f"{entity}/pinhole", "simplecv.components.DistortionCoefficients")
         if not np.allclose(distortion[4:], 0.0):
             raise ValueError(f"{entity}: KB4 supports 4 coefficients, got non-zero tail {distortion[4:]}")
-        relation = int(static_array(dataset, entity, "Transform3D:relation")[0])
+        relation = int(static_array(statics, entity, "Transform3D:relation")[0])
         # log_pinhole writes from_parent=True (TransformRelation.ChildFromParent = 2);
         # the inversion below is only correct for that convention — refuse anything else.
         if relation != 2:
             raise ValueError(f"{entity}: Transform3D relation {relation} is not ChildFromParent(2); refusing to invert blindly")
-        k_matrix: Float64[ndarray, "3 3"] = static_array(dataset, f"{entity}/pinhole", "Pinhole:image_from_camera").reshape(3, 3, order="F")
-        resolution = static_array(dataset, f"{entity}/pinhole", "Pinhole:resolution")
-        cam_R_imu: Float64[ndarray, "3 3"] = static_array(dataset, entity, "Transform3D:mat3x3").reshape(3, 3, order="F")
-        cam_t_imu: Float64[ndarray, "3"] = static_array(dataset, entity, "Transform3D:translation")
+        k_matrix: Float64[ndarray, "3 3"] = static_array(statics, f"{entity}/pinhole", "Pinhole:image_from_camera").reshape(3, 3, order="F")
+        resolution = static_array(statics, f"{entity}/pinhole", "Pinhole:resolution")
+        cam_R_imu: Float64[ndarray, "3 3"] = static_array(statics, entity, "Transform3D:mat3x3").reshape(3, 3, order="F")
+        cam_t_imu: Float64[ndarray, "3"] = static_array(statics, entity, "Transform3D:translation")
         T_imu_cam: Float64[ndarray, "4 4"] = np.eye(4)
         T_imu_cam[:3, :3] = cam_R_imu.T
         T_imu_cam[:3, 3] = -cam_R_imu.T @ cam_t_imu
