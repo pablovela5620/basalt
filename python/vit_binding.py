@@ -164,7 +164,11 @@ def load(lib_path: Path) -> ctypes.CDLL:
 
 def check(result: int, operation: str) -> None:
     if result != Result.SUCCESS:
-        raise RuntimeError(f"{operation} failed: {Result(result).name}")
+        try:
+            name = Result(result).name
+        except ValueError:
+            name = f"unknown result code {result}"
+        raise RuntimeError(f"{operation} failed: {name}")
 
 
 class Tracker:
@@ -172,6 +176,10 @@ class Tracker:
 
     def __init__(self, lib_path: Path, config_file: str | None, cam_count: int) -> None:
         self.lib = load(lib_path)
+        major, minor, patch = (ctypes.c_uint32(), ctypes.c_uint32(), ctypes.c_uint32())
+        check(self.lib.vit_api_get_version(ctypes.byref(major), ctypes.byref(minor), ctypes.byref(patch)), "get_version")
+        if major.value != 2:  # every struct layout here mirrors vit_interface.h 2.x
+            raise RuntimeError(f"VIT API {major.value}.{minor.value}.{patch.value} != expected major 2")
         self._config = Config(
             file=None if config_file is None else config_file.encode(),
             cam_count=cam_count,
@@ -247,15 +255,23 @@ class Tracker:
         )
         check(self.lib.vit_tracker_push_imu_sample(self._handle, ctypes.byref(sample)), "push_imu")
 
-    def push_img(self, cam_index: int, t_ns: int, data_ptr: int, *, width: int, height: int, stride: int) -> None:
+    def push_img(self, cam_index: int, t_ns: int, image: np.ndarray) -> None:
+        """Push one L8 frame; the tracker copies before returning.
+
+        The C++ side indexes the buffer linearly, so it must be uint8, C-contiguous,
+        and unpadded (stride == width).
+        """
+        if image.dtype != np.uint8 or image.ndim != 2 or not image.flags.c_contiguous:
+            raise ValueError(f"push_img needs a C-contiguous uint8 HxW array, got {image.dtype} {image.shape}")
+        height, width = image.shape
         sample = ImgSample(
             cam_index=cam_index,
             timestamp=t_ns,
-            data=ctypes.cast(ctypes.c_void_p(data_ptr), ctypes.POINTER(ctypes.c_uint8)),
+            data=ctypes.cast(ctypes.c_void_p(image.ctypes.data), ctypes.POINTER(ctypes.c_uint8)),
             width=width,
             height=height,
-            stride=stride,
-            size=stride * height,
+            stride=width,
+            size=width * height,
             format=ImageFormat.L8,
             mask_count=0,
             masks=None,
@@ -270,11 +286,19 @@ class Tracker:
             if not pose:  # empty queue: SUCCESS with a null pose
                 return
             data = PoseData()
-            check(self.lib.vit_pose_get_data(pose, ctypes.byref(data)), "pose_get_data")
-            self.lib.vit_pose_destroy(pose)
+            try:
+                check(self.lib.vit_pose_get_data(pose, ctypes.byref(data)), "pose_get_data")
+            finally:
+                self.lib.vit_pose_destroy(pose)
             yield (data.timestamp, data.px, data.py, data.pz, data.ow, data.ox, data.oy, data.oz)
 
     def close(self) -> None:
         if self._handle:
             self.lib.vit_tracker_destroy(self._handle)
             self._handle = ctypes.c_void_p()
+
+    def __enter__(self) -> "Tracker":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
