@@ -140,7 +140,7 @@ class Config:
 
 def main(args: Config) -> None:
     session: int = int(args.session_dir.name.rsplit("_", 1)[1])
-    calibration: dict = calib_converter.convert(args.factory_dir, calib_converter.COVERAGE_CAMERA_SOURCES, args.downscale)["value0"]
+    calibration: calib_converter.BasaltCalibration = calib_converter.convert(args.factory_dir, calib_converter.COVERAGE_CAMERA_SOURCES, args.downscale)
 
     frames_per_camera: list[list[FrameStamp]] = []
     videos: list[list[Path]] = []
@@ -159,11 +159,11 @@ def main(args: Config) -> None:
     imu: ImuSamples = load_imu(args.session_dir, session)
 
     tracker: Tracker = Tracker(args.lib, str(args.vit_config), cam_count=len(COVERAGE_DEVICES))
-    for index, (transform, intrinsics, resolution) in enumerate(
-        zip(calibration["T_imu_cam"], calibration["intrinsics"], calibration["resolution"], strict=True)
+    for index, (transform, camera_model, resolution) in enumerate(
+        zip(calibration.T_imu_cam, calibration.intrinsics, calibration.resolution, strict=True)
     ):
-        values: dict = intrinsics["intrinsics"]
-        quaternion: Float64[ndarray, "4"] = np.array([transform["qx"], transform["qy"], transform["qz"], transform["qw"]])
+        values: calib_converter.Kb4Intrinsics = camera_model.intrinsics
+        quaternion: Float64[ndarray, "4"] = np.array([transform.qx, transform.qy, transform.qz, transform.qw])
         x, y, z, w = quaternion
         rotation: Float64[ndarray, "3 3"] = np.array(
             [
@@ -174,25 +174,25 @@ def main(args: Config) -> None:
         )
         T_imu_cam: Float64[ndarray, "4 4"] = np.eye(4)
         T_imu_cam[:3, :3] = rotation
-        T_imu_cam[:3, 3] = [transform["px"], transform["py"], transform["pz"]]
+        T_imu_cam[:3, 3] = [transform.px, transform.py, transform.pz]
         tracker.add_camera_calibration(
             index,
             width=resolution[0],
             height=resolution[1],
             frequency=30.0,
-            fx=values["fx"],
-            fy=values["fy"],
-            cx=values["cx"],
-            cy=values["cy"],
-            distortion=[values["k1"], values["k2"], values["k3"], values["k4"]],
+            fx=values.fx,
+            fy=values.fy,
+            cx=values.cx,
+            cy=values.cy,
+            distortion=[values.k1, values.k2, values.k3, values.k4],
             T_imu_cam=T_imu_cam,
         )
     tracker.add_imu_calibration(
-        frequency=calibration["imu_update_rate"],
-        gyro_noise_std=calibration["gyro_noise_std"][0],
-        gyro_bias_std=calibration["gyro_bias_std"][0],
-        accel_noise_std=calibration["accel_noise_std"][0],
-        accel_bias_std=calibration["accel_bias_std"][0],
+        frequency=calibration.imu_update_rate,
+        gyro_noise_std=calibration.gyro_noise_std[0],
+        gyro_bias_std=calibration.gyro_bias_std[0],
+        accel_noise_std=calibration.accel_noise_std[0],
+        accel_bias_std=calibration.accel_bias_std[0],
     )
     tracker.start()
 
