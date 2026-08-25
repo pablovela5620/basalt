@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import basalt_convert_robocap_calib as calib_converter  # noqa: E402
-from robocap_feed import ImuSamples, build_framesets, feed_imu_lead  # noqa: E402
+from robocap_feed import FrameStamp, Frameset, ImuSample, ImuSamples, build_framesets, feed_imu_lead  # noqa: E402
 from vit_binding import PoseTuple, Tracker  # noqa: E402
 
 GYRO_SCALE = 0.000266316
@@ -38,8 +38,8 @@ ACCEL_SCALE = 0.001197101
 COVERAGE_DEVICES = ((4, "left"), (1, "left-front"), (5, "right-front"), (3, "right"))
 
 
-def index_video(path: Path) -> list[tuple[int, int]]:
-    """(pts, timestamp_ns) per packet; timestamp = comment epoch + pts, no offset."""
+def index_video(path: Path) -> list[FrameStamp]:
+    """One FrameStamp per packet; timestamp = comment epoch + pts, no offset."""
     with av.open(str(path)) as container:
         stream: av.VideoStream = container.streams.video[0]
         comment: str | None = container.metadata.get("comment") or stream.metadata.get("comment")
@@ -47,8 +47,8 @@ def index_video(path: Path) -> list[tuple[int, int]]:
             raise ValueError(f"Missing absolute timestamp comment in {path}")
         epoch_ns: int = int(comment) * 1_000
         time_base: Fraction = stream.time_base
-        frames: list[tuple[int, int]] = [
-            (packet.pts, epoch_ns + int(packet.pts * time_base * Fraction(1_000_000_000)))
+        frames: list[FrameStamp] = [
+            FrameStamp(packet.pts, epoch_ns + int(packet.pts * time_base * Fraction(1_000_000_000)))
             for packet in container.demux(stream)
             if packet.pts is not None
         ]
@@ -87,7 +87,7 @@ def load_imu(session_dir: Path, session: int) -> ImuSamples:
         interval: float = float(after[3] - before[3])
         alpha: float = 0.0 if interval == 0.0 else float(t_ns - before[3]) / interval
         interpolated: Float64[ndarray, "3"] = before[:3].astype(np.float64) + alpha * (after[:3] - before[:3]).astype(np.float64)
-        paired.append((int(t_ns), value * GYRO_SCALE, interpolated * ACCEL_SCALE))
+        paired.append(ImuSample(int(t_ns), value * GYRO_SCALE, interpolated * ACCEL_SCALE))
     print(f"{len(paired)} paired IMU samples")
     return paired
 
@@ -142,19 +142,19 @@ def main(args: Config) -> None:
     session: int = int(args.session_dir.name.rsplit("_", 1)[1])
     calibration: dict = calib_converter.convert(args.factory_dir, calib_converter.COVERAGE_CAMERA_SOURCES, args.downscale)["value0"]
 
-    frames_per_camera: list[list[tuple[int, int]]] = []
+    frames_per_camera: list[list[FrameStamp]] = []
     videos: list[list[Path]] = []
     for device, position in COVERAGE_DEVICES:
         paths: list[Path] = sorted(args.session_dir.glob(f"video_dev{device}_session{session}_segment*_{position}.mp4"))
         if not paths:
             raise FileNotFoundError(f"No videos for dev{device} {position}")
         videos.append(paths)
-        indexed: list[tuple[int, int]] = []
+        indexed: list[FrameStamp] = []
         for path in paths:
             indexed.extend(index_video(path))
-        indexed.sort(key=lambda frame: frame[1])
+        indexed.sort(key=lambda frame: frame.t_ns)
         frames_per_camera.append(indexed)
-    framesets: list[tuple[int, list[int]]] = build_framesets(frames_per_camera)
+    framesets: list[Frameset] = build_framesets(frames_per_camera)
     print(f"{len(framesets)} complete framesets")
     imu: ImuSamples = load_imu(args.session_dir, session)
 
@@ -206,7 +206,7 @@ def main(args: Config) -> None:
     for count, (timestamp_ns, selected) in enumerate(framesets):
         imu_cursor = feed_imu_lead(tracker, imu, imu_cursor, timestamp_ns)
         for camera, frame_index in enumerate(selected):
-            pts: int = frames_per_camera[camera][frame_index][0]
+            pts: int = frames_per_camera[camera][frame_index].opaque_id
             image: UInt8[ndarray, "h w"] = np.ascontiguousarray(decoders[camera].frame_at(pts))
             tracker.push_img(camera, timestamp_ns, image)
         poses.extend(tracker.drain_poses())  # deterministic mode fills a bounded queue
