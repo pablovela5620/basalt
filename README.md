@@ -72,7 +72,9 @@ Both demos write an `.rrd` recording, a TUM trajectory, and a matching Rerun
 layout under `datasets/`; `scripts/rerun/basalt_vio_blueprint.py` sizes that
 layout from the run's calibration, so 2- and 4-camera rigs share it. For native
 RoboCap data, follow the [RoboCap offline input guide](doc/RoboCap.md); it covers
-calibration, both camera sets, Rerun recording, and the adapter tests.
+calibration, both camera sets, Rerun recording, and the adapter tests. To feed
+basalt's VIT C API from Python — including SLAM straight from a Rerun catalog
+recording — see [python/README.md](python/README.md).
 
 ## Installation
 
