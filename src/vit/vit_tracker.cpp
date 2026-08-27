@@ -581,7 +581,7 @@ struct Tracker::Implementation {
     PoseVelBiasState<double>::Ptr _;
     out_state_queue.pop(data);
     if (data.get() == nullptr) {
-      while (!monado_out_state_queue.try_push(nullptr)) monado_out_state_queue.pop(_);
+      while (!monado_out_state_queue.try_push(nullptr)) monado_out_state_queue.try_pop(_);  // try_pop: blocking pop() races the consumer and can hang
       return false;
     }
     data->input_images->addTime("consumer_state_received");
@@ -593,7 +593,7 @@ struct Tracker::Implementation {
 #endif
 
     data->input_images->addTime("consumer_state_pushed");
-    while (!monado_out_state_queue.try_push(data)) monado_out_state_queue.pop(_);
+    while (!monado_out_state_queue.try_push(data)) monado_out_state_queue.try_pop(_);  // try_pop: blocking pop() races the consumer and can hang
 
     return true;
   }
