@@ -93,7 +93,7 @@ SqrtKeypointVoEstimator<Scalar_>::SqrtKeypointVoEstimator(const basalt::Calibrat
   max_kfs = config.vio_max_kfs;
 
   vision_data_queue.set_capacity(10);
-  imu_data_queue.set_capacity(300);
+  imu_data_queue.set_capacity(3000);  // matches optical flow's input_imu_queue; 300 deadlocks offline replay — one all-camera dropout >1.5s makes a single frameset's IMU batch exceed it while the VIO waits for the image
 }
 
 template <class Scalar>
